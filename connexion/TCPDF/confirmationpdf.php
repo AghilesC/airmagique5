@@ -71,7 +71,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         'work_date' => $_POST['date'] ?? '',
         'signatureImageData' => $_POST['signature'] ?? '',
         'signatureImageData2' => $_POST['signature2'] ?? '',
-        'appel_service' => floatval($_POST['appel_service'] ?? 0),
+        'appel_service' => floatval($_POST['appel_service'] ?? 35),
         'main_oeuvre' => floatval($_POST['main_oeuvre'] ?? 0),
         'category_prices' => $categoryPrices
     ];
@@ -102,10 +102,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
     // Traitement des heures
     $times = [
-        'depart_bureau' => $_POST['depart_bureau_time'] ?? '',
         'arrive_site' => $_POST['arrive_site_time'] ?? '',
-        'depart_site' => $_POST['depart_site_time'] ?? '',
-        'arrive_bureau' => $_POST['arrive_bureau_time'] ?? ''
+        'depart_site' => $_POST['depart_site_time'] ?? ''
     ];
 
     // Fonction pour convertir en format 24h et calculer
@@ -119,10 +117,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     }
 
     $times_24h = array_map('convertTo24HourFormat', $times);
-    $time_seconds = array_map('strtotime', $times_24h);
-    
-    $total_time_sec = $time_seconds['arrive_bureau'] - $time_seconds['depart_bureau'];
-    $site_time_sec = $time_seconds['depart_site'] - $time_seconds['arrive_site'];
+
+    $site_time_sec = 0;
+    if (!empty($times['arrive_site']) && !empty($times['depart_site'])) {
+        $arriveTimestamp = strtotime($times_24h['arrive_site']);
+        $departTimestamp = strtotime($times_24h['depart_site']);
+        if ($arriveTimestamp !== false && $departTimestamp !== false) {
+            $site_time_sec = max(0, $departTimestamp - $arriveTimestamp);
+        }
+    }
+
+    $total_time_sec = $site_time_sec;
     
     $total_hours = floor($total_time_sec / 3600);
     $total_minutes = floor(($total_time_sec % 3600) / 60);
@@ -356,28 +361,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $pdf->SetFont('helvetica', 'B', 7);
     $pdf->SetFillColor(200, 200, 200);
 
-    $heureWidth = $rapportWidth / 4; // Diviser la largeur en 4 colonnes
+    $heureWidth = $rapportWidth / 2; // Diviser la largeur en 2 colonnes
     $pdf->SetX($rapportX);
 
     // En-têtes des colonnes de temps
-    $pdf->Cell($heureWidth, 4, 'DÉPART BUREAU', 1, 0, 'C', true);
     $pdf->Cell($heureWidth, 4, 'ARRIVÉE SITE', 1, 0, 'C', true);
-    $pdf->Cell($heureWidth, 4, 'DÉPART SITE', 1, 0, 'C', true);
-    $pdf->Cell($heureWidth, 4, 'RETOUR BUREAU', 1, 1, 'C', true);
+    $pdf->Cell($heureWidth, 4, 'DÉPART SITE', 1, 1, 'C', true);
 
     $pdf->SetX($rapportX);
-    $pdf->Cell($heureWidth, 4, 'OFFICE DEPARTURE', 1, 0, 'C', true);
     $pdf->Cell($heureWidth, 4, 'SITE ARRIVAL', 1, 0, 'C', true);
-    $pdf->Cell($heureWidth, 4, 'SITE DEPARTURE', 1, 0, 'C', true);
-    $pdf->Cell($heureWidth, 4, 'OFFICE RETURN', 1, 1, 'C', true);
+    $pdf->Cell($heureWidth, 4, 'SITE DEPARTURE', 1, 1, 'C', true);
 
     // Heures
     $pdf->SetFont('helvetica', '', 8);
     $pdf->SetX($rapportX);
-    $pdf->Cell($heureWidth, 6, $times['depart_bureau'], 1, 0, 'C');
     $pdf->Cell($heureWidth, 6, $times['arrive_site'], 1, 0, 'C');
-    $pdf->Cell($heureWidth, 6, $times['depart_site'], 1, 0, 'C');
-    $pdf->Cell($heureWidth, 6, $times['arrive_bureau'], 1, 1, 'C');
+    $pdf->Cell($heureWidth, 6, $times['depart_site'], 1, 1, 'C');
 
     // =============================================
     // SECTION TOTAUX
@@ -536,8 +535,8 @@ $selectedCategories = $_POST['categories'] ?? array();
 
 $sections = [
     'TRAVAIL COMPLÉTÉ',
-    'TEMPS MATÉRIEL',
     'CONTRAT DE SERVICE',
+    'TEMPS MATÉRIEL',
     'AUTOCOLLANT / STICKER',
     'STATIONNEMENT / PARKING',
     'FRAIS ENVIRONNEMENTAL',
@@ -555,13 +554,19 @@ $sections = [
 
 $categoryPricesForPdf = $formData['category_prices'] ?? array();
 
-foreach ($sections as $section) {
+foreach ($sections as $index => $section) {
     $pdf->SetX($checkboxX);
     $pdf->SetFont('helvetica', 'B', 7);
-    $pdf->SetFillColor(200, 200, 200);
+    $isHighlighted = $index < 4;
 
     $isChecked = in_array($section, $selectedCategories);
     $checkMark = $isChecked ? 'X' : '';
+
+    if ($isHighlighted) {
+        $pdf->SetFillColor(200, 200, 200);
+    } else {
+        $pdf->SetFillColor(255, 255, 255);
+    }
 
     $pdf->Cell($checkboxWidth, 7, $checkMark, 1, 0, 'C', true);
     $pdf->Cell($labelWidth, 7, $section, 'LTB', 0, 'L', true);
@@ -574,7 +579,11 @@ foreach ($sections as $section) {
         $priceValue = $categoryPricesForPdf[$section];
     }
 
-    $pdf->SetFillColor(255, 255, 255);
+    if ($isHighlighted) {
+        $pdf->SetFillColor(235, 235, 235);
+    } else {
+        $pdf->SetFillColor(255, 255, 255);
+    }
 
     if ($priceValue == 0) {
         $dollarWidth = $pdf->GetStringWidth('$');
@@ -1501,27 +1510,14 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="depart_bureau_time">Office Departure:</label>
-                        <input type="time" id="depart_bureau_time" name="depart_bureau_time" required>
-                        <div class="error-message" id="error_depart_bureau">⚠️ Invalid time</div>
-                    </div>
-                    <div class="form-group">
                         <label for="arrive_site_time">Arrived on Site:</label>
                         <input type="time" id="arrive_site_time" name="arrive_site_time" required>
-                        <div class="error-message" id="error_arrive_site">⚠️ Must be after office departure</div>
+                        <div class="error-message" id="error_arrive_site">⚠️ Invalid time</div>
                     </div>
-                </div>
-
-                <div class="form-row">
                     <div class="form-group">
                         <label for="depart_site_time">Site Departure:</label>
                         <input type="time" id="depart_site_time" name="depart_site_time" required>
                         <div class="error-message" id="error_depart_site">⚠️ Must be after site arrival</div>
-                    </div>
-                    <div class="form-group">
-                        <label for="arrive_bureau_time">Arrived Office:</label>
-                        <input type="time" id="arrive_bureau_time" name="arrive_bureau_time" required>
-                        <div class="error-message" id="error_arrive_bureau">⚠️ Must be after site departure</div>
                     </div>
                 </div>
 
@@ -1581,13 +1577,13 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                             <input type="checkbox" name="categories[]" value="TRAVAIL COMPLÉTÉ" id="cat1">
                             <label for="cat1">Travail complété</label>
                         </div>
-                        <div class="radio-item" data-category="TEMPS MATÉRIEL">
-                            <input type="checkbox" name="categories[]" value="TEMPS MATÉRIEL" id="cat2">
-                            <label for="cat2">Temps matériel</label>
-                        </div>
                         <div class="radio-item" data-category="CONTRAT DE SERVICE">
-                            <input type="checkbox" name="categories[]" value="CONTRAT DE SERVICE" id="cat3">
-                            <label for="cat3">Contrat de service</label>
+                            <input type="checkbox" name="categories[]" value="CONTRAT DE SERVICE" id="cat2">
+                            <label for="cat2">Contrat de service</label>
+                        </div>
+                        <div class="radio-item" data-category="TEMPS MATÉRIEL">
+                            <input type="checkbox" name="categories[]" value="TEMPS MATÉRIEL" id="cat3">
+                            <label for="cat3">Temps matériel</label>
                         </div>
                         <div class="radio-item" data-category="AUTOCOLLANT / STICKER">
                             <input type="checkbox" name="categories[]" value="AUTOCOLLANT / STICKER" id="cat4">
@@ -1663,7 +1659,7 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                     <div class="form-row">
                         <div class="form-group">
                             <label for="appel_service">Service Call ($):</label>
-                            <input type="number" name="appel_service" id="appel_service" step="0.01" min="0" value="0" placeholder="0.00">
+                            <input type="number" name="appel_service" id="appel_service" step="0.01" min="0" value="35" placeholder="0.00">
                         </div>
                         <div class="form-group">
                             <label for="main_oeuvre">Labor ($):</label>
@@ -1896,71 +1892,49 @@ function updateFileInput() {
 
 // VALIDATION DES HEURES
 function validateTimes() {
-    const departBureau = document.getElementById('depart_bureau_time').value;
     const arriveSite = document.getElementById('arrive_site_time').value;
     const departSite = document.getElementById('depart_site_time').value;
-    const arriveBureau = document.getElementById('arrive_bureau_time').value;
-    
+
     // Réinitialiser les erreurs
     document.querySelectorAll('.error-message').forEach(el => el.classList.remove('show'));
     document.querySelectorAll('input[type="time"]').forEach(el => el.classList.remove('error'));
-    
+
     let isValid = true;
-    
+
     // Vérifier que toutes les heures sont remplies
-    if (!departBureau || !arriveSite || !departSite || !arriveBureau) {
+    if (!arriveSite || !departSite) {
         return false;
     }
-    
+
     // Convertir en minutes pour comparaison facile
     function timeToMinutes(time) {
         const [hours, minutes] = time.split(':').map(Number);
         return hours * 60 + minutes;
     }
-    
-    const departBureauMin = timeToMinutes(departBureau);
+
     const arriveSiteMin = timeToMinutes(arriveSite);
     const departSiteMin = timeToMinutes(departSite);
-    const arriveBureauMin = timeToMinutes(arriveBureau);
-    
-    // Validation 1: Arrivée site doit être après départ bureau
-    if (arriveSiteMin <= departBureauMin) {
-        document.getElementById('arrive_site_time').classList.add('error');
-        document.getElementById('error_arrive_site').classList.add('show');
-        isValid = false;
-    }
-    
+
     // Validation 2: Départ site doit être après arrivée site
     if (departSiteMin <= arriveSiteMin) {
         document.getElementById('depart_site_time').classList.add('error');
         document.getElementById('error_depart_site').classList.add('show');
         isValid = false;
     }
-    
-    // Validation 3: Retour bureau doit être après départ site
-    if (arriveBureauMin <= departSiteMin) {
-        document.getElementById('arrive_bureau_time').classList.add('error');
-        document.getElementById('error_arrive_bureau').classList.add('show');
-        isValid = false;
-    }
-    
+
     return isValid;
 }
 
 // Validation en temps réel
-document.getElementById('depart_bureau_time').addEventListener('change', validateTimes);
 document.getElementById('arrive_site_time').addEventListener('change', validateTimes);
 document.getElementById('depart_site_time').addEventListener('change', validateTimes);
-document.getElementById('arrive_bureau_time').addEventListener('change', validateTimes);
 
 // Validation avant soumission
 document.getElementById('loginform').addEventListener('submit', function(e) {
     if (!validateTimes()) {
         e.preventDefault();
         alert('❌ The times entered are not logical. Please verify:\n\n' +
-              '1. Site arrival must be AFTER office departure\n' +
-              '2. Site departure must be AFTER site arrival\n' +
-              '3. Office return must be AFTER site departure');
+              '1. Site departure must be AFTER site arrival');
         
         // Scroll vers la première erreur
         document.querySelector('.error').scrollIntoView({ behavior: 'smooth', block: 'center' });
