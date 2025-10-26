@@ -558,7 +558,7 @@ mysqli_close($connexion);
         .modal { display: none; position: fixed; z-index: 1000; inset: 0; background-color: rgba(0,0,0,.5); animation: fadeIn .3s ease; }
         .modal.show { display: block; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .modal-content { background: #fff; margin: 5% auto; padding: 0; border-radius: 12px; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,.3); animation: slideIn .3s ease; }
+        .modal-content { background: #fff; margin: 3% auto; padding: 0; border-radius: 12px; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,.3); animation: slideIn .3s ease; }
         @keyframes slideIn { from { transform: translateY(-50px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         .modal-header { padding: 20px 25px; border-bottom: 1px solid #e9ecef; display: flex; justify-content: space-between; align-items: center; background: #f8f9fa; border-radius: 12px 12px 0 0; }
         .modal-title { color: #2c3e50; font-size: 20px; font-weight: 600; margin: 0; }
