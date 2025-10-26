@@ -26,6 +26,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $equipmentQuantities = $_POST['equipment_quantity'] ?? array();
     $equipmentUnitPrices = $_POST['equipment_unit_price'] ?? array();
     $equipmentPrices = $_POST['equipment_price'] ?? array();
+    $equipmentBrands = $_POST['equipment_brand'] ?? array();
+    $equipmentSerials = $_POST['equipment_serial'] ?? array();
+    $equipmentModels = $_POST['equipment_model'] ?? array();
 
     $equipmentList = array();
     foreach ($equipmentNames as $index => $name) {
@@ -40,6 +43,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
             $equipmentList[] = array(
                 'name' => trim($name),
+                'brand' => isset($equipmentBrands[$index]) ? trim($equipmentBrands[$index]) : '',
+                'serial' => isset($equipmentSerials[$index]) ? trim($equipmentSerials[$index]) : '',
+                'model' => isset($equipmentModels[$index]) ? trim($equipmentModels[$index]) : '',
                 'quantity' => $quantity,
                 'unit_price' => $unitPrice,
                 'price' => $price
@@ -336,6 +342,21 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         $quantity = $equipment['quantity'] ?? 1;
         $unitPrice = $equipment['unit_price'] ?? 0;
         $line = $equipment['name'];
+
+        $details = array();
+        if (!empty($equipment['brand'])) {
+            $details[] = 'Marque: ' . $equipment['brand'];
+        }
+        if (!empty($equipment['model'])) {
+            $details[] = 'Modèle: ' . $equipment['model'];
+        }
+        if (!empty($equipment['serial'])) {
+            $details[] = 'No de série: ' . $equipment['serial'];
+        }
+
+        if (!empty($details)) {
+            $line .= ' (' . implode(' | ', $details) . ')';
+        }
 
         if ($quantity > 1) {
             $line .= ' x' . $quantity;
@@ -1032,6 +1053,10 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
             box-shadow: 0 0 0 3px rgba(235, 34, 38, 0.1);
         }
 
+        .text-template-select {
+            margin-bottom: 8px;
+        }
+
         input[readonly] {
             background: #e9ecef;
             cursor: not-allowed;
@@ -1277,7 +1302,7 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
         .equipment-row {
             display: grid;
-            grid-template-columns: 2fr 0.7fr 1fr 1fr auto;
+            grid-template-columns: 1.6fr 1.1fr 1.1fr 1.1fr 0.7fr 0.9fr 0.9fr auto;
             gap: 10px;
             margin-bottom: 10px;
             align-items: end;
@@ -1522,18 +1547,25 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                 </div>
 
                 <div class="form-group">
-                    <label for="description">Travail effectué:</label>
-                    <textarea name="description" rows="6" maxlength="1100" required placeholder="Décrivez le travail effectué..."></textarea>
+                    <label for="description_select">Travail effectué:</label>
+                    <select id="description_select" class="text-template-select">
+                        <option value="">Description manuelle</option>
+                        <option value="Test 1">Test 1</option>
+                        <option value="Test 2">Test 2</option>
+                        <option value="Test 3">Test 3</option>
+                    </select>
+                    <textarea id="description" name="description" rows="6" maxlength="1100" required placeholder="Décrivez le travail effectué..."></textarea>
                 </div>
 
                 <div class="form-group">
-                    <label for="recommendation">Recommendation:</label>
-                    <select name="recommendation" id="recommendation">
-                        <option value="">No recommendation</option>
-                        <option value="Test1">Test1</option>
-                        <option value="Test2">Test2</option>
-                        <option value="Test3">Test3</option>
+                    <label for="recommendation_select">Recommendation:</label>
+                    <select id="recommendation_select" class="text-template-select">
+                        <option value="">Recommendation manuelle</option>
+                        <option value="Test 1">Test 1</option>
+                        <option value="Test 2">Test 2</option>
+                        <option value="Test 3">Test 3</option>
                     </select>
+                    <textarea id="recommendation_text" name="recommendation" rows="3" maxlength="500" placeholder="Ajoutez une recommendation si nécessaire..."></textarea>
                 </div>
 
                 <!-- SECTION EQUIPMENT -->
@@ -1544,6 +1576,18 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                             <div class="form-group">
                                 <label>Nom de l'équipement:</label>
                                 <input type="text" name="equipment_name[]" placeholder="Nom de l'équipement">
+                            </div>
+                            <div class="form-group">
+                                <label>Marque:</label>
+                                <input type="text" name="equipment_brand[]" placeholder="Marque">
+                            </div>
+                            <div class="form-group">
+                                <label>Modèle:</label>
+                                <input type="text" name="equipment_model[]" placeholder="Modèle">
+                            </div>
+                            <div class="form-group">
+                                <label>Numéro de série:</label>
+                                <input type="text" name="equipment_serial[]" placeholder="Numéro de série">
                             </div>
                             <div class="form-group">
                                 <label>Quantité:</label>
@@ -1781,6 +1825,18 @@ function addEquipment() {
             <input type="text" name="equipment_name[]" placeholder="Nom de l'équipement">
         </div>
         <div class="form-group">
+            <label>Marque:</label>
+            <input type="text" name="equipment_brand[]" placeholder="Marque">
+        </div>
+        <div class="form-group">
+            <label>Modèle:</label>
+            <input type="text" name="equipment_model[]" placeholder="Modèle">
+        </div>
+        <div class="form-group">
+            <label>Numéro de série:</label>
+            <input type="text" name="equipment_serial[]" placeholder="Numéro de série">
+        </div>
+        <div class="form-group">
             <label>Quantité:</label>
             <input type="number" name="equipment_quantity[]" class="equipment-quantity" step="1" min="1" value="1">
         </div>
@@ -1990,6 +2046,40 @@ document.getElementById('main_oeuvre').addEventListener('input', calculateBillin
 document.querySelectorAll('.equipment-row').forEach(row => initializeEquipmentRow(row));
 setupCategoryPricing();
 calculateBilling();
+
+function setupTextTemplate(selectId, textareaId) {
+    const select = document.getElementById(selectId);
+    const textarea = document.getElementById(textareaId);
+
+    if (!select || !textarea) {
+        return;
+    }
+
+    let isUpdatingFromSelect = false;
+
+    select.addEventListener('change', () => {
+        const value = select.value;
+        isUpdatingFromSelect = true;
+
+        if (value) {
+            textarea.value = value;
+        } else {
+            textarea.value = '';
+            textarea.focus();
+        }
+
+        isUpdatingFromSelect = false;
+    });
+
+    textarea.addEventListener('input', () => {
+        if (!isUpdatingFromSelect && select.value && textarea.value !== select.value) {
+            select.value = '';
+        }
+    });
+}
+
+setupTextTemplate('description_select', 'description');
+setupTextTemplate('recommendation_select', 'recommendation_text');
 
 // Fonction pour redimensionner correctement le canvas
 function resizeCanvas(canvas) {
