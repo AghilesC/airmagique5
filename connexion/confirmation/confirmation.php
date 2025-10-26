@@ -51,9 +51,12 @@ if ($connexion) {
             color: #333333;
             line-height: 1.6;
             padding: 20px;
+            display: flex;
+            justify-content: center;
         }
 
         .container {
+            width: 100%;
             max-width: 800px;
             margin: 0 auto;
             padding: 20px;
@@ -121,7 +124,9 @@ if ($connexion) {
             left: 50%;
             transform: translate(-50%, -50%);
             opacity: 0.05;
-            max-width: 400px;
+            max-width: min(400px, 90%);
+            width: 100%;
+            height: auto;
             max-height: 400px;
             z-index: 1;
             pointer-events: none;
@@ -277,7 +282,8 @@ if ($connexion) {
         /* Responsive Design */
         @media (max-width: 768px) {
             body {
-                padding: 15px;
+                padding: 10px;
+                align-items: flex-start;
             }
 
             .container {
@@ -285,7 +291,11 @@ if ($connexion) {
             }
 
             .confirmation-section {
-                padding: 15px 20px;
+                padding: 18px;
+            }
+
+            .background-logo {
+                max-width: 85%;
             }
 
             .confirmation-title {
@@ -323,7 +333,7 @@ if ($connexion) {
             }
 
             .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
+                grid-template-columns: minmax(0, 1fr);
                 gap: 15px;
             }
 
@@ -338,11 +348,19 @@ if ($connexion) {
             .page-title {
                 font-size: 24px;
             }
+
+            .back-arrow {
+                font-size: 20px;
+            }
         }
 
         @media (max-width: 480px) {
+            .container {
+                padding: 8px;
+            }
+
             .confirmation-section {
-                padding: 12px 15px;
+                padding: 16px;
             }
 
             .confirmation-title {
@@ -366,6 +384,10 @@ if ($connexion) {
                 min-height: 48px;
             }
 
+            .action-buttons {
+                width: 100%;
+            }
+
             .success-icon {
                 width: 60px;
                 height: 60px;
@@ -377,8 +399,8 @@ if ($connexion) {
             }
 
             .stats-section {
-                padding: 20px;
-                margin-top: 30px;
+                padding: 18px;
+                margin-top: 25px;
             }
 
             .stats-title {
@@ -400,6 +422,11 @@ if ($connexion) {
 
             .page-title {
                 font-size: 20px;
+            }
+
+            .back-arrow {
+                font-size: 18px;
+                margin-bottom: 20px;
             }
         }
 
