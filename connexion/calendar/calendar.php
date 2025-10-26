@@ -655,7 +655,7 @@ mysqli_close($connexion);
             .page-title { font-size: 24px; }
             .toolbar { flex-direction: column; align-items: stretch; }
             .toolbar-left { justify-content: center; }
-            .modal-content { width: 95%; margin: 10% auto; }
+            .modal-content { width: 95%; margin: 6% auto; }
             .btn { padding: 12px 16px; width: 100%; justify-content: center; }
             .fc .fc-toolbar.fc-header-toolbar { flex-direction: column; align-items: stretch; gap: 10px; }
             .fc .fc-toolbar-chunk { width: 100%; justify-content: center; }
@@ -674,6 +674,7 @@ mysqli_close($connexion);
 
         @media (max-width: 480px) {
             .calendar-container { padding: 15px; }
+            .modal-content { margin: 4% auto; }
             .modal-body { padding: 15px; }
             .modal-header, .modal-footer { padding: 15px; }
             .fc .fc-button { width: 100%; }
