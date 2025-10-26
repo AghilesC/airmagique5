@@ -40,6 +40,166 @@ try {
     die("Erreur de connexion : " . $e->getMessage());
 }
 
+/**
+ * Ensure the pivot table used to assign multiple technicians exists.
+ *
+ * @throws Exception when the table creation fails.
+ */
+function ensureInterventionTechniciansTable(mysqli $connexion): void
+{
+    $createTable = "CREATE TABLE IF NOT EXISTS intervention_technicians (
+        intervention_id INT NOT NULL,
+        technician_id INT NOT NULL,
+        PRIMARY KEY (intervention_id, technician_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+    if (!mysqli_query($connexion, $createTable)) {
+        throw new Exception("Impossible de vérifier la table d'association des techniciens: " . mysqli_error($connexion));
+    }
+}
+
+/**
+ * Retrieve the technicians associated with the provided interventions.
+ *
+ * @param mysqli $connexion
+ * @param array<int> $interventionIds
+ *
+ * @return array<int, array<int, array<string, mixed>>> Map of intervention id to technician records
+ */
+function fetchTechniciansForInterventions(mysqli $connexion, array $interventionIds): array
+{
+    $mapping = [];
+    if (empty($interventionIds)) {
+        return $mapping;
+    }
+
+    $cleanIds = array_map('intval', $interventionIds);
+    $cleanIds = array_unique(array_filter($cleanIds, static function ($value) {
+        return $value > 0;
+    }));
+
+    if (empty($cleanIds)) {
+        return $mapping;
+    }
+
+    $idList = implode(',', $cleanIds);
+    $query = "SELECT it.intervention_id, it.technician_id,
+                     a.first_name, a.last_name, a.depot, a.mail, a.phone_number
+              FROM intervention_technicians it
+              LEFT JOIN account a ON it.technician_id = a.idacount
+              WHERE it.intervention_id IN ($idList)
+              ORDER BY a.first_name, a.last_name";
+
+    $result = mysqli_query($connexion, $query);
+    if (!$result) {
+        throw new Exception("Erreur lors de la récupération des techniciens: " . mysqli_error($connexion));
+    }
+
+    while ($row = mysqli_fetch_assoc($result)) {
+        $interventionId = (int) $row['intervention_id'];
+        $technicianId = (int) $row['technician_id'];
+        $fullName = trim(($row['first_name'] ?? '') . ' ' . ($row['last_name'] ?? ''));
+        if ($fullName === '') {
+            $fullName = 'Technician #' . $technicianId;
+        }
+
+        if (!isset($mapping[$interventionId])) {
+            $mapping[$interventionId] = [];
+        }
+
+        $mapping[$interventionId][] = [
+            'id' => $technicianId,
+            'name' => $fullName,
+            'first_name' => $row['first_name'] ?? '',
+            'last_name' => $row['last_name'] ?? '',
+            'depot' => $row['depot'] ?? '',
+            'email' => $row['mail'] ?? '',
+            'phone_number' => $row['phone_number'] ?? ''
+        ];
+    }
+
+    return $mapping;
+}
+
+/**
+ * Synchronise the technicians assigned to an intervention.
+ *
+ * @param mysqli $connexion
+ * @param int $interventionId
+ * @param array<int> $technicianIds
+ *
+ * @throws Exception when database operations fail
+ */
+function syncInterventionTechnicians(mysqli $connexion, int $interventionId, array $technicianIds): void
+{
+    $interventionId = max(0, $interventionId);
+
+    if (!mysqli_query($connexion, "DELETE FROM intervention_technicians WHERE intervention_id = " . $interventionId)) {
+        throw new Exception("Erreur lors de la réinitialisation des techniciens assignés: " . mysqli_error($connexion));
+    }
+
+    if (empty($technicianIds)) {
+        return;
+    }
+
+    $insertQuery = "INSERT INTO intervention_technicians (intervention_id, technician_id) VALUES (?, ?)";
+    $stmt = mysqli_prepare($connexion, $insertQuery);
+    if (!$stmt) {
+        throw new Exception("Erreur de préparation de l'insertion des techniciens: " . mysqli_error($connexion));
+    }
+
+    foreach ($technicianIds as $techId) {
+        $techId = (int) $techId;
+        if ($techId <= 0) {
+            continue;
+        }
+
+        mysqli_stmt_bind_param($stmt, "ii", $interventionId, $techId);
+        if (!mysqli_stmt_execute($stmt)) {
+            $error = mysqli_error($connexion);
+            mysqli_stmt_close($stmt);
+            throw new Exception("Erreur lors de l'enregistrement des techniciens: " . $error);
+        }
+    }
+
+    mysqli_stmt_close($stmt);
+}
+
+/**
+ * Format an intervention title by appending technician names when available.
+ */
+function formatEventTitleWithTechnicians(string $baseTitle, array $technicians): string
+{
+    $baseTitle = trim($baseTitle);
+    if (empty($technicians)) {
+        return $baseTitle;
+    }
+
+    $names = array_map(static function ($tech) {
+        return $tech['name'] ?? '';
+    }, $technicians);
+    $names = array_filter($names, static function ($name) {
+        return trim($name) !== '';
+    });
+
+    if (empty($names)) {
+        return $baseTitle;
+    }
+
+    return $baseTitle . ' — ' . implode(', ', $names);
+}
+
+try {
+    ensureInterventionTechniciansTable($connexion);
+} catch (Exception $e) {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+        exit();
+    }
+    die($e->getMessage());
+}
+
 // Vérifier que les tables existent
 $checkAccount = mysqli_query($connexion, "SHOW TABLES LIKE 'account'");
 $checkInterventions = mysqli_query($connexion, "SHOW TABLES LIKE 'interventions'");
@@ -59,14 +219,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     try {
         switch ($_POST['action']) {
             case 'get_events':
-                $query = "SELECT i.*, 
+                $query = "SELECT i.*,
                                 CONCAT(a.first_name, ' ', a.last_name) as technician_name,
                                 a.idacount as technician_id_ref,
                                 a.depot as technician_depot,
                                 a.mail as technician_email,
                                 a.phone_number as technician_phone
-                         FROM interventions i 
-                         LEFT JOIN account a ON i.technician_id = a.idacount 
+                         FROM interventions i
+                         LEFT JOIN account a ON i.technician_id = a.idacount
                          WHERE i.start_datetime >= ? AND i.start_datetime <= ?";
                 $stmt = mysqli_prepare($connexion, $query);
                 if (!$stmt) {
@@ -77,8 +237,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 mysqli_stmt_bind_param($stmt, "ss", $start, $end);
                 mysqli_stmt_execute($stmt);
                 $result = mysqli_stmt_get_result($stmt);
-                $events = [];
+
+                $rawEvents = [];
                 while ($row = mysqli_fetch_assoc($result)) {
+                    $rawEvents[] = $row;
+                }
+                mysqli_stmt_close($stmt);
+
+                $technicianMap = fetchTechniciansForInterventions($connexion, array_column($rawEvents, 'id'));
+
+                $events = [];
+                foreach ($rawEvents as $row) {
                     $statusColors = [
                         'scheduled' => '#3788d8',
                         'in_progress' => '#ffc107',
@@ -92,9 +261,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         'urgent' => '#dc3545'
                     ];
                     $backgroundColor = $priorityColors[$row['priority']] ?? $statusColors[$row['status']];
+
+                    $interventionId = (int) $row['id'];
+                    $assignedTechnicians = $technicianMap[$interventionId] ?? [];
+                    $technicianIds = array_map(static function ($tech) {
+                        return $tech['id'];
+                    }, $assignedTechnicians);
+                    $technicianSummary = implode(', ', array_map(static function ($tech) {
+                        return $tech['name'];
+                    }, $assignedTechnicians));
+
+                    $primaryTechnician = $assignedTechnicians[0] ?? null;
                     $events[] = [
-                        'id' => $row['id'],
-                        'title' => $row['title'],
+                        'id' => $interventionId,
+                        'title' => formatEventTitleWithTechnicians($row['title'], $assignedTechnicians),
                         'start' => $row['start_datetime'],
                         'end' => $row['end_datetime'],
                         'backgroundColor' => $backgroundColor,
@@ -111,7 +291,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             'technician_phone' => $row['technician_phone'],
                             'status' => $row['status'],
                             'priority' => $row['priority'],
-                            'notes' => $row['notes']
+                            'notes' => $row['notes'],
+                            'raw_title' => $row['title'],
+                            'technicians' => $assignedTechnicians,
+                            'technician_ids' => $technicianIds,
+                            'technician_summary' => $technicianSummary,
+                            'primary_technician' => $primaryTechnician
                         ]
                     ];
                 }
@@ -152,62 +337,98 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $client_name = mysqli_real_escape_string($connexion, $_POST['client_name'] ?? '');
                 $client_address = mysqli_real_escape_string($connexion, $_POST['client_address'] ?? '');
                 $client_phone = mysqli_real_escape_string($connexion, $_POST['client_phone'] ?? '');
-                $technician_id = !empty($_POST['technician_id']) ? intval($_POST['technician_id']) : null;
                 $start_datetime = $_POST['start_datetime'] ?? '';
                 $end_datetime = $_POST['end_datetime'] ?? '';
                 $status = $_POST['status'] ?? 'scheduled';
                 $priority = $_POST['priority'] ?? 'medium';
                 $notes = mysqli_real_escape_string($connexion, $_POST['notes'] ?? '');
 
+                $technicianIdsInput = $_POST['technician_ids'] ?? [];
+                if (!is_array($technicianIdsInput)) {
+                    $technicianIdsInput = [$technicianIdsInput];
+                }
+                $technicianIds = array_values(array_unique(array_filter(array_map(static function ($value) {
+                    if ($value === '' || $value === null) {
+                        return null;
+                    }
+                    return (int) $value;
+                }, $technicianIdsInput), static function ($value) {
+                    return !is_null($value) && $value > 0;
+                })));
+
+                if (count($technicianIds) > 5) {
+                    throw new Exception("Vous pouvez assigner jusqu'à 5 techniciens par intervention");
+                }
+
                 if (empty($title) || empty($start_datetime) || empty($end_datetime)) {
                     throw new Exception("Les champs titre, date de début et date de fin sont requis");
                 }
 
-                if (!empty($technician_id)) {
-                    $checkTechnician = mysqli_prepare($connexion, "SELECT idacount FROM account WHERE idacount = ?");
-                    if (!$checkTechnician) {
-                        throw new Exception("Erreur de préparation de la requête de validation");
+                if (!empty($technicianIds)) {
+                    $idList = implode(',', $technicianIds);
+                    $techValidationQuery = "SELECT idacount FROM account WHERE idacount IN ($idList)";
+                    $techValidationResult = mysqli_query($connexion, $techValidationQuery);
+                    if (!$techValidationResult) {
+                        throw new Exception("Erreur lors de la validation des techniciens: " . mysqli_error($connexion));
                     }
-                    mysqli_stmt_bind_param($checkTechnician, "i", $technician_id);
-                    mysqli_stmt_execute($checkTechnician);
-                    $techResult = mysqli_stmt_get_result($checkTechnician);
-                    if (mysqli_num_rows($techResult) == 0) {
-                        throw new Exception("Technicien non trouvé dans la table account");
+
+                    $foundIds = [];
+                    while ($techRow = mysqli_fetch_assoc($techValidationResult)) {
+                        $foundIds[] = (int) $techRow['idacount'];
+                    }
+
+                    sort($foundIds);
+                    $sortedRequested = $technicianIds;
+                    sort($sortedRequested);
+
+                    if ($sortedRequested !== $foundIds) {
+                        throw new Exception("Certains techniciens sélectionnés sont introuvables");
                     }
                 }
 
+                $primaryTechnicianId = $technicianIds[0] ?? null;
+
                 if (isset($_POST['intervention_id']) && !empty($_POST['intervention_id'])) {
-                    $query = "UPDATE interventions SET 
-                                title=?, description=?, client_name=?, client_address=?, 
-                                client_phone=?, technician_id=?, start_datetime=?, end_datetime=?, 
-                                status=?, priority=?, notes=? 
+                    $query = "UPDATE interventions SET
+                                title=?, description=?, client_name=?, client_address=?,
+                                client_phone=?, technician_id=?, start_datetime=?, end_datetime=?,
+                                status=?, priority=?, notes=?
                               WHERE id=?";
                     $stmt = mysqli_prepare($connexion, $query);
                     if (!$stmt) {
                         throw new Exception("Erreur de préparation de la requête de mise à jour");
                     }
-                    mysqli_stmt_bind_param($stmt, "sssssisssssi", 
-                        $title, $description, $client_name, $client_address, 
-                        $client_phone, $technician_id, $start_datetime, $end_datetime, 
-                        $status, $priority, $notes, $_POST['intervention_id']);
+                    $interventionId = (int) $_POST['intervention_id'];
+                    mysqli_stmt_bind_param($stmt, "sssssisssssi",
+                        $title, $description, $client_name, $client_address,
+                        $client_phone, $primaryTechnicianId, $start_datetime, $end_datetime,
+                        $status, $priority, $notes, $interventionId);
                 } else {
-                    $query = "INSERT INTO interventions 
-                             (title, description, client_name, client_address, client_phone, 
-                              technician_id, start_datetime, end_datetime, status, priority, notes, created_by) 
+                    $query = "INSERT INTO interventions
+                             (title, description, client_name, client_address, client_phone,
+                              technician_id, start_datetime, end_datetime, status, priority, notes, created_by)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
                     $stmt = mysqli_prepare($connexion, $query);
                     if (!$stmt) {
                         throw new Exception("Erreur de préparation de la requête d'insertion");
                     }
-                    mysqli_stmt_bind_param($stmt, "sssssisssssi", 
-                        $title, $description, $client_name, $client_address, $client_phone, 
-                        $technician_id, $start_datetime, $end_datetime, $status, $priority, $notes, $userId);
+                    mysqli_stmt_bind_param($stmt, "sssssisssssi",
+                        $title, $description, $client_name, $client_address, $client_phone,
+                        $primaryTechnicianId, $start_datetime, $end_datetime, $status, $priority, $notes, $userId);
+                    $interventionId = null;
                 }
 
                 if (mysqli_stmt_execute($stmt)) {
+                    if (empty($interventionId)) {
+                        $interventionId = mysqli_insert_id($connexion);
+                    }
+                    mysqli_stmt_close($stmt);
+                    syncInterventionTechnicians($connexion, (int) $interventionId, $technicianIds);
                     echo json_encode(['success' => true]);
                 } else {
-                    throw new Exception("Erreur lors de l'exécution de la requête: " . mysqli_error($connexion));
+                    $errorMessage = mysqli_error($connexion);
+                    mysqli_stmt_close($stmt);
+                    throw new Exception("Erreur lors de l'exécution de la requête: " . $errorMessage);
                 }
                 break;
 
@@ -223,9 +444,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
                 mysqli_stmt_bind_param($stmt, "i", $intervention_id);
                 if (mysqli_stmt_execute($stmt)) {
+                    mysqli_stmt_close($stmt);
+                    $deleteTechStmt = mysqli_prepare($connexion, "DELETE FROM intervention_technicians WHERE intervention_id = ?");
+                    if ($deleteTechStmt) {
+                        mysqli_stmt_bind_param($deleteTechStmt, "i", $intervention_id);
+                        mysqli_stmt_execute($deleteTechStmt);
+                        mysqli_stmt_close($deleteTechStmt);
+                    }
                     echo json_encode(['success' => true]);
                 } else {
-                    throw new Exception("Erreur lors de la suppression: " . mysqli_error($connexion));
+                    $deleteError = mysqli_error($connexion);
+                    mysqli_stmt_close($stmt);
+                    throw new Exception("Erreur lors de la suppression: " . $deleteError);
                 }
                 break;
 
@@ -317,6 +547,12 @@ mysqli_close($connexion);
         .fc-today-button { background-color: #17a2b8 !important; border-color: #17a2b8 !important; }
         .fc-today-button:hover { background-color: #138496 !important; border-color: #138496 !important; }
         .fc-event { border-radius: 6px; font-weight: 500; font-size: 12px; position: relative; cursor: pointer; }
+        .fc .fc-toolbar.fc-header-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+        .fc .fc-toolbar-chunk { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .fc .fc-toolbar-title { font-size: 22px; font-weight: 600; }
+        .fc-daygrid-event { white-space: normal !important; }
+        .fc-daygrid-event .fc-event-title { white-space: normal !important; }
+        .fc .fc-button { white-space: nowrap; }
 
         /* Form & Modal */
         .modal { display: none; position: fixed; z-index: 1000; inset: 0; background-color: rgba(0,0,0,.5); animation: fadeIn .3s ease; }
@@ -335,6 +571,23 @@ mysqli_close($connexion);
         .form-control { width: 100%; padding: 12px; border: 2px solid #e9ecef; border-radius: 8px; font-size: 14px; font-family: inherit; transition: all .3s ease; background: #fff; }
         .form-control:focus { outline: none; border-color: #e82226; box-shadow: 0 0 0 3px rgba(232,34,38,.1); }
         textarea.form-control { resize: vertical; min-height: 80px; }
+        .form-control[multiple] { min-height: 140px; }
+        .form-hint { display: block; margin-top: 6px; font-size: 12px; color: #6c757d; }
+        .technician-picker { display: flex; flex-direction: column; gap: 10px; }
+        .technician-selected-preview { display: flex; flex-wrap: wrap; gap: 8px; min-height: 34px; padding: 4px 0; }
+        .technician-selected-preview .technician-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: #e7f1ff; color: #0d6efd; font-weight: 600; font-size: 12px; border: 1px solid #cfe2ff; }
+        .technician-selected-preview .technician-chip .chip-remove { border: none; background: transparent; color: inherit; font-size: 14px; cursor: pointer; line-height: 1; padding: 0 2px; display: flex; align-items: center; justify-content: center; }
+        .technician-selected-preview .technician-chip .chip-remove:hover { color: #0a58ca; }
+        .technician-selected-preview .technician-empty { font-size: 13px; color: #6c757d; }
+        .technician-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; border: 1px solid #e0e4ea; border-radius: 8px; padding: 10px; max-height: 220px; overflow: auto; background: #fff; }
+        .technician-option { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: 6px; background: #f8f9fa; border: 1px solid transparent; cursor: pointer; transition: background-color .2s ease, border-color .2s ease; }
+        .technician-option:hover { background: #eef4ff; border-color: rgba(13, 110, 253, 0.25); }
+        .technician-option input[type="checkbox"] { margin-top: 4px; }
+        .technician-option .technician-details { display: flex; flex-direction: column; gap: 2px; }
+        .technician-option .technician-name { font-weight: 600; color: #2c3e50; font-size: 13px; }
+        .technician-option .technician-meta { font-size: 12px; color: #6c757d; }
+        @media (max-width: 768px) { .technician-list { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); } }
+        @media (max-width: 480px) { .technician-list { grid-template-columns: 1fr; } }
         .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
 
         /* ---- Time controls responsive ---- */
@@ -388,6 +641,11 @@ mysqli_close($connexion);
             .toolbar-left { justify-content: center; }
             .modal-content { width: 95%; margin: 10% auto; }
             .btn { padding: 12px 16px; width: 100%; justify-content: center; }
+            .fc .fc-toolbar.fc-header-toolbar { flex-direction: column; align-items: stretch; gap: 10px; }
+            .fc .fc-toolbar-chunk { width: 100%; justify-content: center; }
+            .fc .fc-toolbar-title { width: 100%; text-align: center; font-size: 20px; }
+            .fc .fc-button { flex: 1 1 auto; }
+            .form-control[multiple] { min-height: 120px; }
 
             /* Time controls: tout en colonne, full width */
             .time-wrap { flex-direction: column; align-items: stretch; gap: 8px; }
@@ -401,6 +659,9 @@ mysqli_close($connexion);
             .calendar-container { padding: 15px; }
             .modal-body { padding: 15px; }
             .modal-header, .modal-footer { padding: 15px; }
+            .fc .fc-button { width: 100%; }
+            .fc .fc-toolbar-title { font-size: 18px; }
+            .form-control[multiple] { min-height: 100px; }
 
             /* Encore plus confortable pour très petits écrans */
             .time-wrap .time-selects { flex-direction: column; gap: 8px; }
@@ -480,10 +741,12 @@ mysqli_close($connexion);
                         <h4><i class="fas fa-calendar"></i> Scheduling</h4>
 
                         <div class="form-group">
-                            <label for="technician_id">Assigned Technician (from account table)</label>
-                            <select id="technician_id" name="technician_id" class="form-control">
-                                <option value="">Select a technician...</option>
-                            </select>
+                            <label>Assigned Technicians (max 5)</label>
+                            <div id="technicianPicker" class="technician-picker">
+                                <div id="technicianSelectedPreview" class="technician-selected-preview" aria-live="polite"></div>
+                                <div id="technicianList" class="technician-list" role="group" aria-label="Technicians"></div>
+                            </div>
+                            <small class="form-hint" id="technicianHelper">Select up to 5 technicians.</small>
                         </div>
 
                         <div class="form-row">
@@ -556,8 +819,10 @@ mysqli_close($connexion);
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.8/index.global.min.js"></script>
 
     <script>
+        const TECHNICIAN_LIMIT = 5;
         let calendar;
         let technicians = [];
+        let technicianSelectionCache = [];
         let currentEditingEvent = null;
 
         // ====== Time helpers ======
@@ -618,7 +883,15 @@ mysqli_close($connexion);
         }
         function formatDateTimeForDB(date) {
             if (!date) return '';
-            return new Date(date).toISOString().slice(0, 19).replace('T', ' ');
+            const d = new Date(date);
+            if (Number.isNaN(d.getTime())) return '';
+            const year = d.getFullYear();
+            const month = pad2(d.getMonth() + 1);
+            const day = pad2(d.getDate());
+            const hours = pad2(d.getHours());
+            const minutes = pad2(d.getMinutes());
+            const seconds = pad2(d.getSeconds());
+            return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
         }
         function ensureEndAfterStart() {
             const startStr = readTimeControls('start');
@@ -639,6 +912,7 @@ mysqli_close($connexion);
                 const el = document.getElementById(id);
                 if (el) el.addEventListener('change', ensureEndAfterStart);
             });
+            updateTechnicianHelper();
             loadTechnicians();
             initializeCalendar();
         });
@@ -659,7 +933,7 @@ mysqli_close($connexion);
                     const data = JSON.parse(text);
                     if (data.success === false) throw new Error(data.error || 'Unknown error');
                     technicians = data;
-                    populateTechnicianSelect();
+                    populateTechnicianList(technicianSelectionCache);
                 } catch (e) {
                     console.error('JSON parsing error:', e, text);
                     throw new Error('Non-JSON response received from server');
@@ -670,17 +944,171 @@ mysqli_close($connexion);
                 showNotification('Error loading technicians: ' + error.message, 'error');
             });
         }
-        function populateTechnicianSelect() {
-            const select = document.getElementById('technician_id');
-            select.innerHTML = '<option value="">Select a technician...</option>';
-            technicians.forEach(tech => {
-                const option = document.createElement('option');
-                option.value = tech.id;
-                option.textContent = tech.name;
-                option.dataset.email = tech.email || '';
-                option.dataset.phone = tech.phone_number || '';
-                select.appendChild(option);
+        function populateTechnicianList(selectedIds = []) {
+            const container = document.getElementById('technicianList');
+            if (!container) return;
+
+            const idsToSelect = (selectedIds.length ? selectedIds : technicianSelectionCache)
+                .map(String)
+                .filter(Boolean);
+
+            const normalizedSelection = Array.from(new Set(idsToSelect)).slice(0, TECHNICIAN_LIMIT);
+
+            container.innerHTML = '';
+
+            if (technicians.length === 0) {
+                const empty = document.createElement('span');
+                empty.className = 'technician-empty';
+                empty.textContent = 'No technicians available.';
+                container.appendChild(empty);
+            } else {
+                technicians.forEach(tech => {
+                    const option = document.createElement('label');
+                    option.className = 'technician-option';
+
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.name = 'technician_ids[]';
+                    checkbox.value = String(tech.id);
+                    checkbox.checked = normalizedSelection.includes(checkbox.value);
+                    checkbox.addEventListener('change', handleTechnicianCheckboxChange);
+
+                    const details = document.createElement('div');
+                    details.className = 'technician-details';
+
+                    const name = document.createElement('span');
+                    name.className = 'technician-name';
+                    name.textContent = tech.name || `Technician #${tech.id}`;
+                    details.appendChild(name);
+
+                    const metaParts = [];
+                    if (tech.depot) metaParts.push(tech.depot);
+                    if (tech.phone_number) metaParts.push(tech.phone_number);
+                    if (tech.email) metaParts.push(tech.email);
+                    if (metaParts.length) {
+                        const meta = document.createElement('span');
+                        meta.className = 'technician-meta';
+                        meta.textContent = metaParts.join(' • ');
+                        details.appendChild(meta);
+                    }
+
+                    option.appendChild(checkbox);
+                    option.appendChild(details);
+                    container.appendChild(option);
+                });
+            }
+
+            technicianSelectionCache = normalizedSelection;
+            updateTechnicianHelper();
+        }
+
+        function getSelectedTechnicianIds() {
+            const container = document.getElementById('technicianList');
+            if (!container) {
+                return technicianSelectionCache.slice();
+            }
+            return Array.from(container.querySelectorAll('input[name="technician_ids[]"]:checked')).map(cb => cb.value);
+        }
+
+        function resolveTechnicianName(id) {
+            const match = technicians.find(tech => String(tech.id) === String(id));
+            return match ? (match.name || `Technician #${match.id}`) : `Technician #${id}`;
+        }
+
+        function renderTechnicianPreview(selectedIds) {
+            const preview = document.getElementById('technicianSelectedPreview');
+            if (!preview) return;
+
+            preview.innerHTML = '';
+            if (!selectedIds.length) {
+                const empty = document.createElement('span');
+                empty.className = 'technician-empty';
+                empty.textContent = 'No technician selected.';
+                preview.appendChild(empty);
+                return;
+            }
+
+            selectedIds.forEach(id => {
+                const chip = document.createElement('span');
+                chip.className = 'technician-chip';
+
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = resolveTechnicianName(id);
+                chip.appendChild(nameSpan);
+
+                const removeBtn = document.createElement('button');
+                removeBtn.type = 'button';
+                removeBtn.className = 'chip-remove';
+                removeBtn.innerHTML = '&times;';
+                removeBtn.setAttribute('aria-label', `Remove ${nameSpan.textContent}`);
+                removeBtn.addEventListener('click', () => {
+                    const container = document.getElementById('technicianList');
+                    if (!container) return;
+                    const checkbox = Array.from(container.querySelectorAll('input[name="technician_ids[]"]'))
+                        .find(cb => cb.value === String(id));
+                    if (checkbox) {
+                        checkbox.checked = false;
+                        handleTechnicianCheckboxChange({ target: checkbox });
+                    }
+                });
+
+                chip.appendChild(removeBtn);
+                preview.appendChild(chip);
             });
+        }
+
+        function updateTechnicianHelper() {
+            const helper = document.getElementById('technicianHelper');
+            const selected = getSelectedTechnicianIds();
+            if (helper) {
+                if (selected.length === 0) {
+                    helper.textContent = `Select up to ${TECHNICIAN_LIMIT} technicians.`;
+                } else {
+                    helper.textContent = `${selected.length} technician${selected.length > 1 ? 's' : ''} selected (max ${TECHNICIAN_LIMIT}).`;
+                }
+            }
+            renderTechnicianPreview(selected);
+        }
+
+        function clearTechnicianSelection() {
+            const container = document.getElementById('technicianList');
+            if (container) {
+                container.querySelectorAll('input[name="technician_ids[]"]').forEach(cb => { cb.checked = false; });
+            }
+
+            technicianSelectionCache = [];
+            updateTechnicianHelper();
+        }
+
+        function setSelectedTechnicians(ids) {
+            const idStrings = Array.isArray(ids)
+                ? Array.from(new Set(ids.map(String))).slice(0, TECHNICIAN_LIMIT)
+                : [];
+            technicianSelectionCache = idStrings;
+
+            const container = document.getElementById('technicianList');
+            if (container) {
+                container.querySelectorAll('input[name="technician_ids[]"]').forEach(cb => {
+                    cb.checked = idStrings.includes(cb.value);
+                });
+            }
+
+            updateTechnicianHelper();
+        }
+
+        function handleTechnicianCheckboxChange(event) {
+            const checkbox = event && event.target ? event.target : null;
+            if (!checkbox) return;
+
+            let selected = getSelectedTechnicianIds();
+            if (selected.length > TECHNICIAN_LIMIT) {
+                checkbox.checked = false;
+                selected = getSelectedTechnicianIds();
+                showNotification(`Maximum ${TECHNICIAN_LIMIT} technicians can be assigned.`, 'warning');
+            }
+
+            technicianSelectionCache = selected;
+            updateTechnicianHelper();
         }
 
         // ====== Calendar ======
@@ -736,7 +1164,7 @@ mysqli_close($connexion);
                 },
                 eventClick: function(info) { openInterventionModal(info.event); },
                 select: function(info) { openInterventionModal(null, info.startStr, info.endStr); },
-                eventDrop: function(info) { updateEventTime(info.event); },
+                eventDrop: function(info) { handleEventDrop(info); },
                 eventResize: function(info) { updateEventTime(info.event); },
                 eventDisplay: 'block',
                 eventTextColor: '#ffffff',
@@ -758,7 +1186,10 @@ mysqli_close($connexion);
                     const tooltipLines = [];
                     tooltipLines.push(event.title);
                     if (props.client_name) tooltipLines.push('Client: ' + props.client_name);
-                    if (props.technician_name) {
+                    if (props.technicians && props.technicians.length) {
+                        const names = props.technician_summary || props.technicians.map(t => t.name).join(', ');
+                        tooltipLines.push('Technician(s): ' + names);
+                    } else if (props.technician_name) {
                         tooltipLines.push('Technician: ' + props.technician_name + ' (' + (props.technician_depot || 'No depot') + ')');
                     } else {
                         tooltipLines.push('No technician assigned');
@@ -810,7 +1241,7 @@ mysqli_close($connexion);
             document.getElementById('client_name').value = '';
             document.getElementById('client_address').value = '';
             document.getElementById('client_phone').value = '';
-            document.getElementById('technician_id').value = '';
+            clearTechnicianSelection();
             document.getElementById('status').value = 'scheduled';
             document.getElementById('priority').value = 'medium';
             document.getElementById('notes').value = '';
@@ -823,12 +1254,12 @@ mysqli_close($connexion);
 
                 const props = event.extendedProps;
                 document.getElementById('interventionId').value = event.id;
-                document.getElementById('title').value = event.title || '';
+                document.getElementById('title').value = props.raw_title || event.title || '';
                 document.getElementById('description').value = props.description || '';
                 document.getElementById('client_name').value = props.client_name || '';
                 document.getElementById('client_address').value = props.client_address || '';
                 document.getElementById('client_phone').value = props.client_phone || '';
-                document.getElementById('technician_id').value = props.technician_id || '';
+                setSelectedTechnicians(props.technician_ids || []);
                 setTimeControls(event.start, 'start');
                 setTimeControls(event.end, 'end');
                 document.getElementById('status').value = props.status || 'scheduled';
@@ -954,6 +1385,56 @@ mysqli_close($connexion);
                 deleteBtn.innerHTML = '<i class="fas fa-trash"></i> Delete';
                 deleteBtn.disabled = false;
             });
+        }
+
+        function handleEventDrop(info) {
+            if (info.view && info.view.type === 'dayGridMonth') {
+                preserveEventTimeForMonthDrop(info);
+            }
+            updateEventTime(info.event);
+        }
+
+        function preserveEventTimeForMonthDrop(info) {
+            const event = info.event;
+            const oldEvent = info.oldEvent;
+            if (!event || !event.start || !oldEvent || !oldEvent.start) {
+                return;
+            }
+
+            const newStart = new Date(event.start.getTime());
+            const oldStart = new Date(oldEvent.start.getTime());
+            newStart.setHours(oldStart.getHours(), oldStart.getMinutes(), oldStart.getSeconds(), oldStart.getMilliseconds());
+
+            let newEnd = null;
+            if (oldEvent.end) {
+                const oldEnd = new Date(oldEvent.end.getTime());
+                const duration = oldEnd.getTime() - oldStart.getTime();
+                if (duration > 0) {
+                    newEnd = new Date(newStart.getTime() + duration);
+                } else {
+                    newEnd = new Date(newStart.getTime());
+                }
+            } else if (event.end) {
+                const currentDuration = event.end.getTime() - event.start.getTime();
+                if (!Number.isNaN(currentDuration) && currentDuration > 0) {
+                    newEnd = new Date(newStart.getTime() + currentDuration);
+                }
+            }
+
+            if (!newEnd) {
+                newEnd = new Date(newStart.getTime() + 60 * 60 * 1000);
+            }
+
+            if (typeof event.setAllDay === 'function' && event.allDay) {
+                event.setAllDay(false);
+            }
+
+            if (typeof event.setDates === 'function') {
+                event.setDates(newStart, newEnd);
+            } else {
+                event.setStart(newStart);
+                event.setEnd(newEnd);
+            }
         }
 
         function updateEventTime(event) {
