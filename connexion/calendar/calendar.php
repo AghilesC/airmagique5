@@ -572,6 +572,37 @@ mysqli_close($connexion);
         .form-control:focus { outline: none; border-color: #e82226; box-shadow: 0 0 0 3px rgba(232,34,38,.1); }
         textarea.form-control { resize: vertical; min-height: 80px; }
         .form-control[multiple] { min-height: 140px; }
+        .technician-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 220px;
+            overflow-y: auto;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            padding: 12px;
+            background: #fff;
+        }
+        .technician-option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            color: #2c3e50;
+        }
+        .technician-option input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: #e82226;
+            cursor: pointer;
+        }
+        .technician-option span {
+            flex: 1 1 auto;
+        }
+        .technician-empty {
+            color: #6c757d;
+            font-size: 13px;
+        }
         .form-hint { display: block; margin-top: 6px; font-size: 12px; color: #6c757d; }
         .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
 
@@ -631,6 +662,7 @@ mysqli_close($connexion);
             .fc .fc-toolbar-title { width: 100%; text-align: center; font-size: 20px; }
             .fc .fc-button { flex: 1 1 auto; }
             .form-control[multiple] { min-height: 120px; }
+            .technician-list { max-height: 200px; }
 
             /* Time controls: tout en colonne, full width */
             .time-wrap { flex-direction: column; align-items: stretch; gap: 8px; }
@@ -647,6 +679,7 @@ mysqli_close($connexion);
             .fc .fc-button { width: 100%; }
             .fc .fc-toolbar-title { font-size: 18px; }
             .form-control[multiple] { min-height: 100px; }
+            .technician-list { max-height: 180px; }
 
             /* Encore plus confortable pour très petits écrans */
             .time-wrap .time-selects { flex-direction: column; gap: 8px; }
@@ -726,10 +759,10 @@ mysqli_close($connexion);
                         <h4><i class="fas fa-calendar"></i> Scheduling</h4>
 
                         <div class="form-group">
-                            <label for="technician_ids">Assigned Technicians (max 5)</label>
-                            <select id="technician_ids" name="technician_ids[]" class="form-control" multiple size="6">
-                                <option value="" disabled>Choose technicians...</option>
-                            </select>
+                            <label id="technicianLabel">Assigned Technicians (max 5)</label>
+                            <div id="technician_list" class="technician-list" role="group" aria-labelledby="technicianLabel">
+                                <div class="technician-empty">Loading technicians...</div>
+                            </div>
                             <small class="form-hint" id="technicianHelper">Select up to 5 technicians.</small>
                         </div>
 
@@ -896,9 +929,9 @@ mysqli_close($connexion);
                 const el = document.getElementById(id);
                 if (el) el.addEventListener('change', ensureEndAfterStart);
             });
-            const technicianSelect = document.getElementById('technician_ids');
-            if (technicianSelect) {
-                technicianSelect.addEventListener('change', handleTechnicianSelectionChange);
+            const technicianContainer = document.getElementById('technician_list');
+            if (technicianContainer) {
+                technicianContainer.addEventListener('change', handleTechnicianCheckboxChange);
             }
             updateTechnicianHelper();
             loadTechnicians();
@@ -906,6 +939,22 @@ mysqli_close($connexion);
         });
 
         // ====== Technicians ======
+        function getTechnicianContainer() {
+            return document.getElementById('technician_list');
+        }
+
+        function getTechnicianCheckboxes() {
+            const container = getTechnicianContainer();
+            if (!container) return [];
+            return Array.from(container.querySelectorAll('input[type="checkbox"][name="technician_ids[]"]'));
+        }
+
+        function getCheckedTechnicianValues() {
+            return getTechnicianCheckboxes()
+                .filter(input => input.checked && input.value)
+                .map(input => input.value);
+        }
+
         function loadTechnicians() {
             fetch('', {
                 method: 'POST',
@@ -921,7 +970,7 @@ mysqli_close($connexion);
                     const data = JSON.parse(text);
                     if (data.success === false) throw new Error(data.error || 'Unknown error');
                     technicians = data;
-                    populateTechnicianSelect(technicianSelectionCache);
+                    populateTechnicianList(technicianSelectionCache);
                 } catch (e) {
                     console.error('JSON parsing error:', e, text);
                     throw new Error('Non-JSON response received from server');
@@ -932,46 +981,52 @@ mysqli_close($connexion);
                 showNotification('Error loading technicians: ' + error.message, 'error');
             });
         }
-        function populateTechnicianSelect(selectedIds = []) {
-            const select = document.getElementById('technician_ids');
-            if (!select) return;
+        function populateTechnicianList(selectedIds = []) {
+            const container = getTechnicianContainer();
+            if (!container) return;
 
             const idsToSelect = (selectedIds.length ? selectedIds : technicianSelectionCache).map(String);
-            const previousScroll = select.scrollTop;
-            select.innerHTML = '';
+            container.innerHTML = '';
 
-            const placeholder = document.createElement('option');
-            placeholder.value = '';
-            placeholder.disabled = true;
-            placeholder.textContent = 'Choose technicians...';
-            select.appendChild(placeholder);
+            if (!technicians.length) {
+                const empty = document.createElement('div');
+                empty.className = 'technician-empty';
+                empty.textContent = 'No technicians available';
+                container.appendChild(empty);
+                technicianSelectionCache = [];
+                updateTechnicianHelper();
+                return;
+            }
 
             technicians.forEach(tech => {
-                const option = document.createElement('option');
-                option.value = String(tech.id);
-                option.textContent = tech.name;
-                option.dataset.email = tech.email || '';
-                option.dataset.phone = tech.phone_number || '';
-                if (idsToSelect.includes(option.value)) {
-                    option.selected = true;
+                const option = document.createElement('label');
+                option.className = 'technician-option';
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.name = 'technician_ids[]';
+                checkbox.value = String(tech.id);
+                if (idsToSelect.includes(checkbox.value)) {
+                    checkbox.checked = true;
                 }
-                select.appendChild(option);
+
+                const info = document.createElement('span');
+                info.textContent = tech.name;
+
+                option.appendChild(checkbox);
+                option.appendChild(info);
+                container.appendChild(option);
             });
 
-            select.scrollTop = previousScroll;
-            technicianSelectionCache = Array.from(select.selectedOptions).map(opt => opt.value).filter(Boolean);
-            if (!select.selectedOptions.length) {
-                select.selectedIndex = -1;
-            }
+            technicianSelectionCache = getCheckedTechnicianValues();
             updateTechnicianHelper();
         }
 
         function updateTechnicianHelper() {
             const helper = document.getElementById('technicianHelper');
-            const select = document.getElementById('technician_ids');
-            if (!helper || !select) return;
+            if (!helper) return;
 
-            const selectedCount = Array.from(select.selectedOptions).filter(opt => opt.value).length;
+            const selectedCount = getCheckedTechnicianValues().length;
             if (selectedCount === 0) {
                 helper.textContent = `Select up to ${TECHNICIAN_LIMIT} technicians.`;
             } else {
@@ -980,28 +1035,27 @@ mysqli_close($connexion);
         }
 
         function clearTechnicianSelection() {
-            const select = document.getElementById('technician_ids');
-            if (!select) return;
-            Array.from(select.options).forEach(option => { option.selected = false; });
-            select.selectedIndex = -1;
+            getTechnicianCheckboxes().forEach(checkbox => {
+                checkbox.checked = false;
+            });
             technicianSelectionCache = [];
             updateTechnicianHelper();
         }
 
         function setSelectedTechnicians(ids) {
-            const select = document.getElementById('technician_ids');
             const idStrings = Array.isArray(ids)
                 ? Array.from(new Set(ids.map(String))).slice(0, TECHNICIAN_LIMIT)
                 : [];
             let applied = false;
 
-            if (select) {
-                Array.from(select.options).forEach(option => {
-                    const shouldSelect = idStrings.includes(option.value);
-                    option.selected = shouldSelect;
+            const checkboxes = getTechnicianCheckboxes();
+            if (checkboxes.length) {
+                checkboxes.forEach(checkbox => {
+                    const shouldSelect = idStrings.includes(checkbox.value);
+                    checkbox.checked = shouldSelect;
                     applied = applied || shouldSelect;
                 });
-                technicianSelectionCache = Array.from(select.selectedOptions).map(opt => opt.value).filter(Boolean);
+                technicianSelectionCache = getCheckedTechnicianValues();
                 updateTechnicianHelper();
             }
 
@@ -1010,25 +1064,22 @@ mysqli_close($connexion);
             }
         }
 
-        function handleTechnicianSelectionChange(event) {
-            const select = event.target;
-            if (!select) return;
+        function handleTechnicianCheckboxChange(event) {
+            const checkbox = event.target;
+            if (!(checkbox instanceof HTMLInputElement) || checkbox.type !== 'checkbox') {
+                return;
+            }
 
-            const selectedValues = Array.from(select.selectedOptions).map(opt => opt.value).filter(Boolean);
+            const selectedValues = getCheckedTechnicianValues();
             if (selectedValues.length > TECHNICIAN_LIMIT) {
-                const lastSelected = selectedValues[selectedValues.length - 1];
-                Array.from(select.options).forEach(option => {
-                    if (option.value === lastSelected) {
-                        option.selected = false;
-                    }
-                });
+                checkbox.checked = false;
+                technicianSelectionCache = getCheckedTechnicianValues();
+                updateTechnicianHelper();
                 showNotification(`Maximum ${TECHNICIAN_LIMIT} technicians can be assigned.`, 'warning');
+                return;
             }
 
-            technicianSelectionCache = Array.from(select.selectedOptions).map(opt => opt.value).filter(Boolean);
-            if (!select.selectedOptions.length) {
-                select.selectedIndex = -1;
-            }
+            technicianSelectionCache = selectedValues;
             updateTechnicianHelper();
         }
 
