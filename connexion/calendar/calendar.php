@@ -1077,7 +1077,7 @@ mysqli_close($connexion);
                 },
                 eventClick: function(info) { openInterventionModal(info.event); },
                 select: function(info) { openInterventionModal(null, info.startStr, info.endStr); },
-                eventDrop: function(info) { updateEventTime(info.event); },
+                eventDrop: function(info) { handleEventDrop(info); },
                 eventResize: function(info) { updateEventTime(info.event); },
                 eventDisplay: 'block',
                 eventTextColor: '#ffffff',
@@ -1298,6 +1298,56 @@ mysqli_close($connexion);
                 deleteBtn.innerHTML = '<i class="fas fa-trash"></i> Delete';
                 deleteBtn.disabled = false;
             });
+        }
+
+        function handleEventDrop(info) {
+            if (info.view && info.view.type === 'dayGridMonth') {
+                preserveEventTimeForMonthDrop(info);
+            }
+            updateEventTime(info.event);
+        }
+
+        function preserveEventTimeForMonthDrop(info) {
+            const event = info.event;
+            const oldEvent = info.oldEvent;
+            if (!event || !event.start || !oldEvent || !oldEvent.start) {
+                return;
+            }
+
+            const newStart = new Date(event.start.getTime());
+            const oldStart = new Date(oldEvent.start.getTime());
+            newStart.setHours(oldStart.getHours(), oldStart.getMinutes(), oldStart.getSeconds(), oldStart.getMilliseconds());
+
+            let newEnd = null;
+            if (oldEvent.end) {
+                const oldEnd = new Date(oldEvent.end.getTime());
+                const duration = oldEnd.getTime() - oldStart.getTime();
+                if (duration > 0) {
+                    newEnd = new Date(newStart.getTime() + duration);
+                } else {
+                    newEnd = new Date(newStart.getTime());
+                }
+            } else if (event.end) {
+                const currentDuration = event.end.getTime() - event.start.getTime();
+                if (!Number.isNaN(currentDuration) && currentDuration > 0) {
+                    newEnd = new Date(newStart.getTime() + currentDuration);
+                }
+            }
+
+            if (!newEnd) {
+                newEnd = new Date(newStart.getTime() + 60 * 60 * 1000);
+            }
+
+            if (typeof event.setAllDay === 'function' && event.allDay) {
+                event.setAllDay(false);
+            }
+
+            if (typeof event.setDates === 'function') {
+                event.setDates(newStart, newEnd);
+            } else {
+                event.setStart(newStart);
+                event.setEnd(newEnd);
+            }
         }
 
         function updateEventTime(event) {
