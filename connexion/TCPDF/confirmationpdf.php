@@ -23,17 +23,35 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     
     // Récupérer les équipements et leurs prix
     $equipmentNames = $_POST['equipment_name'] ?? array();
+    $equipmentQuantities = $_POST['equipment_quantity'] ?? array();
+    $equipmentUnitPrices = $_POST['equipment_unit_price'] ?? array();
     $equipmentPrices = $_POST['equipment_price'] ?? array();
-    
+
     $equipmentList = array();
     foreach ($equipmentNames as $index => $name) {
         if (!empty($name)) {
+            $quantity = isset($equipmentQuantities[$index]) ? max(1, intval($equipmentQuantities[$index])) : 1;
+            $unitPrice = isset($equipmentUnitPrices[$index]) ? floatval($equipmentUnitPrices[$index]) : 0;
             $price = isset($equipmentPrices[$index]) ? floatval($equipmentPrices[$index]) : 0;
+
+            if ($unitPrice > 0 && $quantity > 0) {
+                $price = $unitPrice * $quantity;
+            }
+
             $equipmentList[] = array(
-                'name' => $name,
+                'name' => trim($name),
+                'quantity' => $quantity,
+                'unit_price' => $unitPrice,
                 'price' => $price
             );
         }
+    }
+
+    // Prix associés aux catégories cochées
+    $categoryPriceInput = $_POST['category_price'] ?? array();
+    $categoryPrices = array();
+    foreach ($categoryPriceInput as $category => $value) {
+        $categoryPrices[$category] = floatval($value);
     }
 
     // Récupération données formulaire
@@ -51,27 +69,41 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         'emailpartner' => $_POST['emailpartner'] ?? '',
         'equipment_list' => $equipmentList,
         'work_date' => $_POST['date'] ?? '',
-        'km' => $_POST['km'] ?? '',
         'signatureImageData' => $_POST['signature'] ?? '',
         'signatureImageData2' => $_POST['signature2'] ?? '',
         'appel_service' => floatval($_POST['appel_service'] ?? 0),
-        'main_oeuvre' => floatval($_POST['main_oeuvre'] ?? 0)
+        'main_oeuvre' => floatval($_POST['main_oeuvre'] ?? 0),
+        'category_prices' => $categoryPrices
     ];
 
     // Calculs de facturation
     $appelService = $formData['appel_service'];
     $mainOeuvre = $formData['main_oeuvre'];
-    $sousTotal = $appelService + $mainOeuvre;
+    $equipmentTotal = array_sum(array_column($equipmentList, 'price'));
+
+    $nonBillableCategories = array(
+        'TEMPS MATÉRIEL',
+        'CONTRAT DE SERVICE',
+        'AUTOCOLLANT / STICKER',
+        'TRAVAIL COMPLÉTÉ'
+    );
+
+    $categoryTotal = 0;
+    foreach ($categoryPrices as $category => $value) {
+        if (!in_array($category, $nonBillableCategories, true)) {
+            $categoryTotal += $value;
+        }
+    }
+
+    $sousTotal = $appelService + $mainOeuvre + $equipmentTotal + $categoryTotal;
     $tps = $sousTotal * 0.05;
     $tvq = $sousTotal * 0.09975;
     $total = $sousTotal + $tps + $tvq;
 
     // Traitement des heures
     $times = [
-        'depart_bureau' => $_POST['depart_bureau_time'] ?? '',
         'arrive_site' => $_POST['arrive_site_time'] ?? '',
-        'depart_site' => $_POST['depart_site_time'] ?? '',
-        'arrive_bureau' => $_POST['arrive_bureau_time'] ?? ''
+        'depart_site' => $_POST['depart_site_time'] ?? ''
     ];
 
     // Fonction pour convertir en format 24h et calculer
@@ -87,8 +119,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $times_24h = array_map('convertTo24HourFormat', $times);
     $time_seconds = array_map('strtotime', $times_24h);
     
-    $total_time_sec = $time_seconds['arrive_bureau'] - $time_seconds['depart_bureau'];
-    $site_time_sec = $time_seconds['depart_site'] - $time_seconds['arrive_site'];
+    $site_time_sec = max(0, $time_seconds['depart_site'] - $time_seconds['arrive_site']);
+    $total_time_sec = $site_time_sec;
     
     $total_hours = floor($total_time_sec / 3600);
     $total_minutes = floor(($total_time_sec % 3600) / 60);
@@ -294,7 +326,20 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     // Construire le texte pour le matériel utilisé
     $equipmentText = '';
     foreach ($formData['equipment_list'] as $equipment) {
-        $equipmentText .= $equipment['name'] . ' - ' . number_format($equipment['price'], 2, '.', ' ') . ' $' . "\n";
+        $quantity = $equipment['quantity'] ?? 1;
+        $unitPrice = $equipment['unit_price'] ?? 0;
+        $line = $equipment['name'];
+
+        if ($quantity > 1) {
+            $line .= ' x' . $quantity;
+        }
+
+        if (!empty($unitPrice)) {
+            $line .= ' @ ' . number_format($unitPrice, 2, '.', ' ') . ' $';
+        }
+
+        $line .= ' - ' . number_format($equipment['price'], 2, '.', ' ') . ' $';
+        $equipmentText .= $line . "\n";
     }
     
     // Grande zone pour le matériel utilisé
@@ -309,28 +354,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $pdf->SetFont('helvetica', 'B', 7);
     $pdf->SetFillColor(200, 200, 200);
 
-    $heureWidth = $rapportWidth / 4; // Diviser la largeur en 4 colonnes
+    $heureWidth = $rapportWidth / 2; // Diviser la largeur en 2 colonnes
     $pdf->SetX($rapportX);
 
     // En-têtes des colonnes de temps
-    $pdf->Cell($heureWidth, 4, 'DÉPART BUREAU', 1, 0, 'C', true);
     $pdf->Cell($heureWidth, 4, 'ARRIVÉE SITE', 1, 0, 'C', true);
-    $pdf->Cell($heureWidth, 4, 'DÉPART SITE', 1, 0, 'C', true);
-    $pdf->Cell($heureWidth, 4, 'RETOUR BUREAU', 1, 1, 'C', true);
+    $pdf->Cell($heureWidth, 4, 'DÉPART SITE', 1, 1, 'C', true);
 
     $pdf->SetX($rapportX);
-    $pdf->Cell($heureWidth, 4, 'OFFICE DEPARTURE', 1, 0, 'C', true);
     $pdf->Cell($heureWidth, 4, 'SITE ARRIVAL', 1, 0, 'C', true);
-    $pdf->Cell($heureWidth, 4, 'SITE DEPARTURE', 1, 0, 'C', true);
-    $pdf->Cell($heureWidth, 4, 'OFFICE RETURN', 1, 1, 'C', true);
+    $pdf->Cell($heureWidth, 4, 'SITE DEPARTURE', 1, 1, 'C', true);
 
     // Heures
     $pdf->SetFont('helvetica', '', 8);
     $pdf->SetX($rapportX);
-    $pdf->Cell($heureWidth, 6, $times['depart_bureau'], 1, 0, 'C');
     $pdf->Cell($heureWidth, 6, $times['arrive_site'], 1, 0, 'C');
-    $pdf->Cell($heureWidth, 6, $times['depart_site'], 1, 0, 'C');
-    $pdf->Cell($heureWidth, 6, $times['arrive_bureau'], 1, 1, 'C');
+    $pdf->Cell($heureWidth, 6, $times['depart_site'], 1, 1, 'C');
 
     // =============================================
     // SECTION TOTAUX
@@ -339,12 +378,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $pdf->SetFont('helvetica', 'B', 7);
     $pdf->SetFillColor(200, 200, 200);
     
-    $totalWidth = $rapportWidth / 3; // Diviser en 3 colonnes
+    $totalWidth = $rapportWidth / 2; // Diviser en 2 colonnes
     $pdf->SetX($rapportX);
-    
+
     $pdf->Cell($totalWidth, 4, 'TEMPS TOTAL / TOTAL TIME', 1, 0, 'C', true);
-    $pdf->Cell($totalWidth, 4, 'TEMPS SUR SITE / TIME ON SITE', 1, 0, 'C', true);
-    $pdf->Cell($totalWidth, 4, 'KILOMÉTRAGE / MILEAGE', 1, 1, 'C', true);
+    $pdf->Cell($totalWidth, 4, 'TEMPS SUR SITE / TIME ON SITE', 1, 1, 'C', true);
 
     $pdf->SetFont('helvetica', 'B', 8);
     $totalTimeStr = sprintf("%02d:%02d", $total_hours, $total_minutes);
@@ -352,8 +390,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     
     $pdf->SetX($rapportX);
     $pdf->Cell($totalWidth, 6, $totalTimeStr, 1, 0, 'C');
-    $pdf->Cell($totalWidth, 6, $siteTimeStr, 1, 0, 'C');
-    $pdf->Cell($totalWidth, 6, $formData['km'] . ' KM', 1, 1, 'C');
+    $pdf->Cell($totalWidth, 6, $siteTimeStr, 1, 1, 'C');
 
     // =============================================
     // SECTION TECHNICIEN SUPPLÉMENTAIRE
@@ -490,11 +527,11 @@ $pdf->SetY($checkboxY);
 $selectedCategories = $_POST['categories'] ?? array();
 
 $sections = [
-    'TEMPS MATÉRIEL',
-    'CONTRAT DE SERVICE',
-    'STATIONNEMENT / PARKING',
-    'AUTOCOLLANT / STICKER',
     'TRAVAIL COMPLÉTÉ',
+    'CONTRAT DE SERVICE',
+    'TEMPS MATÉRIEL',
+    'AUTOCOLLANT / STICKER',
+    'STATIONNEMENT / PARKING',
     'FRAIS ENVIRONNEMENTAL',
     'ÉQUIPEMENT DÉSHYDRATATION',
     'ÉQUIPEMENT RÉCUPÉRATION',
@@ -508,30 +545,57 @@ $sections = [
     'INSTRUMENTATION'
 ];
 
+$categoryPricesForPdf = $formData['category_prices'] ?? array();
+$greySections = array_slice($sections, 0, 4);
+
 foreach ($sections as $section) {
     $pdf->SetX($checkboxX);
     $pdf->SetFont('helvetica', 'B', 7);
-    $pdf->SetFillColor(200, 200, 200);
+    $isGreySection = in_array($section, $greySections, true);
+
+    if ($isGreySection) {
+        $pdf->SetFillColor(200, 200, 200);
+    } else {
+        $pdf->SetFillColor(255, 255, 255);
+    }
 
     $isChecked = in_array($section, $selectedCategories);
     $checkMark = $isChecked ? 'X' : '';
 
     $pdf->Cell($checkboxWidth, 7, $checkMark, 1, 0, 'C', true);
     $pdf->Cell($labelWidth, 7, $section, 'LTB', 0, 'L', true);
-    
+
     $pdf->SetFillColor(0, 0, 0);
     $pdf->Cell($separatorWidth, 7, '', 'TB', 0, 'C', true);
-    
-    $dollarWidth = $pdf->GetStringWidth('$');
-    $dotWidth = $pdf->GetStringWidth('.');
-    $availableSpace = $valueWidth - $dollarWidth - 2;
-    $numDots = floor($availableSpace / $dotWidth);
-    $dotsString = str_repeat('.', max(0, $numDots)) . '$';
-    
-    $pdf->SetFillColor(255, 255, 255);
-    $pdf->Cell($valueWidth, 7, $dotsString, 'RTB', 1, 'L', true);
-    
-    $pdf->SetFillColor(200, 200, 200);
+
+    $priceValue = 0;
+    if ($isChecked && isset($categoryPricesForPdf[$section])) {
+        $priceValue = $categoryPricesForPdf[$section];
+    }
+
+    if ($isGreySection) {
+        $pdf->SetFillColor(220, 220, 220);
+    } else {
+        $pdf->SetFillColor(255, 255, 255);
+    }
+
+    if ($priceValue == 0) {
+        $dollarWidth = $pdf->GetStringWidth('$');
+        $dotWidth = $pdf->GetStringWidth('.');
+        $availableSpace = $valueWidth - $dollarWidth - 2;
+        $numDots = floor($availableSpace / $dotWidth);
+        $dotsString = str_repeat('.', max(0, $numDots)) . '$';
+        $pdf->Cell($valueWidth, 7, $dotsString, 'RTB', 1, 'L', true);
+    } else {
+        $valueStr = number_format($priceValue, 2, '.', ' ');
+        $dollarWidth = $pdf->GetStringWidth('$');
+        $valueStrWidth = $pdf->GetStringWidth($valueStr);
+        $dotWidth = $pdf->GetStringWidth('.');
+        $availableSpace = $valueWidth - $valueStrWidth - $dollarWidth - 3;
+        $numDots = floor($availableSpace / $dotWidth);
+        $displayValue = str_repeat('.', max(0, $numDots)) . $valueStr . ' $';
+        $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
+    }
 }
 
 // SECTION FACTURATION
@@ -992,6 +1056,27 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
             display: flex;
             align-items: center;
             gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .radio-item label {
+            margin-right: auto;
+        }
+
+        .category-grid {
+            display: grid;
+            gap: 12px;
+            margin-top: 10px;
+        }
+
+        .category-price {
+            margin-left: auto;
+            max-width: 140px;
+        }
+
+        .category-price:disabled {
+            background: #e9ecef;
+            cursor: not-allowed;
         }
 
         input[type="radio"] {
@@ -1184,7 +1269,7 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
         .equipment-row {
             display: grid;
-            grid-template-columns: 2fr 1fr auto;
+            grid-template-columns: 2fr 0.7fr 1fr 1fr auto;
             gap: 10px;
             margin-bottom: 10px;
             align-items: end;
@@ -1417,38 +1502,20 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="depart_bureau_time">Office Departure:</label>
-                        <input type="time" id="depart_bureau_time" name="depart_bureau_time" required>
-                        <div class="error-message" id="error_depart_bureau">⚠️ Invalid time</div>
-                    </div>
-                    <div class="form-group">
                         <label for="arrive_site_time">Arrived on Site:</label>
                         <input type="time" id="arrive_site_time" name="arrive_site_time" required>
-                        <div class="error-message" id="error_arrive_site">⚠️ Must be after office departure</div>
+                        <div class="error-message" id="error_arrive_site">⚠️ Time required</div>
                     </div>
-                </div>
-
-                <div class="form-row">
                     <div class="form-group">
                         <label for="depart_site_time">Site Departure:</label>
                         <input type="time" id="depart_site_time" name="depart_site_time" required>
                         <div class="error-message" id="error_depart_site">⚠️ Must be after site arrival</div>
                     </div>
-                    <div class="form-group">
-                        <label for="arrive_bureau_time">Arrived Office:</label>
-                        <input type="time" id="arrive_bureau_time" name="arrive_bureau_time" required>
-                        <div class="error-message" id="error_arrive_bureau">⚠️ Must be after site departure</div>
-                    </div>
                 </div>
 
                 <div class="form-group">
-                    <label for="km">Kilometers Traveled:</label>
-                    <input type="number" name="km" step="1" min="0" required placeholder="Required">
-                </div>
-
-                <div class="form-group">
-                    <label for="description">Description:</label>
-                    <textarea name="description" rows="6" maxlength="1100" required placeholder="Describe the work performed..."></textarea>
+                    <label for="description">Travail effectué:</label>
+                    <textarea name="description" rows="6" maxlength="1100" required placeholder="Décrivez le travail effectué..."></textarea>
                 </div>
 
                 <div class="form-group">
@@ -1463,16 +1530,24 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
                 <!-- SECTION EQUIPMENT -->
                 <div class="equipment-section">
-                    <h3 style="margin-bottom: 15px; color: #2c3e50;">Equipment Used</h3>
+                    <h3 style="margin-bottom: 15px; color: #2c3e50;">Équipement utilisé</h3>
                     <div id="equipment-container">
                         <div class="equipment-row">
                             <div class="form-group">
-                                <label>Equipment Name:</label>
-                                <input type="text" name="equipment_name[]" placeholder="Enter equipment name">
+                                <label>Nom de l'équipement:</label>
+                                <input type="text" name="equipment_name[]" placeholder="Nom de l'équipement">
                             </div>
                             <div class="form-group">
-                                <label>Price ($):</label>
-                                <input type="number" name="equipment_price[]" step="0.01" min="0" placeholder="0.00">
+                                <label>Quantité:</label>
+                                <input type="number" name="equipment_quantity[]" class="equipment-quantity" step="1" min="1" value="1">
+                            </div>
+                            <div class="form-group">
+                                <label>Prix unitaire ($):</label>
+                                <input type="number" name="equipment_unit_price[]" class="equipment-unit-price" step="0.01" min="0" placeholder="0.00">
+                            </div>
+                            <div class="form-group">
+                                <label>Prix total ($):</label>
+                                <input type="number" name="equipment_price[]" class="equipment-total-price" step="0.01" min="0" value="0.00" readonly>
                             </div>
                             <div>
                                 <button type="button" class="btn-remove" onclick="removeEquipment(this)" style="visibility: hidden;">
@@ -1483,76 +1558,88 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                     </div>
                     <button type="button" class="btn-add" onclick="addEquipment()">
                         <i class="fas fa-plus"></i>
-                        Add Equipment
+                        Ajouter un équipement
                     </button>
                 </div>
 
                 <div class="form-group">
                     <label>Work Categories:</label>
-                    <div style="display: grid; gap: 12px; margin-top: 10px;">
-                        <div class="radio-item">
-                            <input type="checkbox" name="categories[]" value="TEMPS MATÉRIEL" id="cat1">
-                            <label for="cat1">Temps matériel</label>
+                    <div class="category-grid">
+                        <div class="radio-item" data-category="TRAVAIL COMPLÉTÉ">
+                            <input type="checkbox" name="categories[]" value="TRAVAIL COMPLÉTÉ" id="cat1">
+                            <label for="cat1">Travail complété</label>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="CONTRAT DE SERVICE">
                             <input type="checkbox" name="categories[]" value="CONTRAT DE SERVICE" id="cat2">
                             <label for="cat2">Contrat de service</label>
                         </div>
-                        <div class="radio-item">
-                            <input type="checkbox" name="categories[]" value="STATIONNEMENT / PARKING" id="cat3">
-                            <label for="cat3">Stationnement / Parking</label>
+                        <div class="radio-item" data-category="TEMPS MATÉRIEL">
+                            <input type="checkbox" name="categories[]" value="TEMPS MATÉRIEL" id="cat3">
+                            <label for="cat3">Temps matériel</label>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="AUTOCOLLANT / STICKER">
                             <input type="checkbox" name="categories[]" value="AUTOCOLLANT / STICKER" id="cat4">
                             <label for="cat4">Autocollant / Sticker</label>
                         </div>
-                        <div class="radio-item">
-                            <input type="checkbox" name="categories[]" value="TRAVAIL COMPLÉTÉ" id="cat5">
-                            <label for="cat5">Travail complété</label>
+                        <div class="radio-item" data-category="STATIONNEMENT / PARKING">
+                            <input type="checkbox" name="categories[]" value="STATIONNEMENT / PARKING" id="cat5">
+                            <label for="cat5">Stationnement / Parking</label>
+                            <input type="number" class="category-price" name="category_price[STATIONNEMENT / PARKING]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="FRAIS ENVIRONNEMENTAL">
                             <input type="checkbox" name="categories[]" value="FRAIS ENVIRONNEMENTAL" id="cat6">
                             <label for="cat6">Frais environnemental</label>
+                            <input type="number" class="category-price" name="category_price[FRAIS ENVIRONNEMENTAL]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="ÉQUIPEMENT DÉSHYDRATATION">
                             <input type="checkbox" name="categories[]" value="ÉQUIPEMENT DÉSHYDRATATION" id="cat7">
                             <label for="cat7">Équipement déshydratation</label>
+                            <input type="number" class="category-price" name="category_price[ÉQUIPEMENT DÉSHYDRATATION]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="ÉQUIPEMENT RÉCUPÉRATION">
                             <input type="checkbox" name="categories[]" value="ÉQUIPEMENT RÉCUPÉRATION" id="cat8">
                             <label for="cat8">Équipement récupération</label>
+                            <input type="number" class="category-price" name="category_price[ÉQUIPEMENT RÉCUPÉRATION]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="S. OXYGÈNE ACÉTYLÈNE">
                             <input type="checkbox" name="categories[]" value="S. OXYGÈNE ACÉTYLÈNE" id="cat9">
                             <label for="cat9">S. Oxygène acétylène</label>
+                            <input type="number" class="category-price" name="category_price[S. OXYGÈNE ACÉTYLÈNE]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="S. PROPANE">
                             <input type="checkbox" name="categories[]" value="S. PROPANE" id="cat10">
                             <label for="cat10">S. Propane</label>
+                            <input type="number" class="category-price" name="category_price[S. PROPANE]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="ÉQUIPEMENT À PRESSION">
                             <input type="checkbox" name="categories[]" value="ÉQUIPEMENT À PRESSION" id="cat11">
                             <label for="cat11">Équipement à pression</label>
+                            <input type="number" class="category-price" name="category_price[ÉQUIPEMENT À PRESSION]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="FOURNITURE D'ATELIER">
                             <input type="checkbox" name="categories[]" value="FOURNITURE D'ATELIER" id="cat12">
                             <label for="cat12">Fourniture d'atelier</label>
+                            <input type="number" class="category-price" name="category_price[FOURNITURE D'ATELIER]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="FOURNITURE ÉLECTRIQUE">
                             <input type="checkbox" name="categories[]" value="FOURNITURE ÉLECTRIQUE" id="cat13">
                             <label for="cat13">Fourniture électrique</label>
+                            <input type="number" class="category-price" name="category_price[FOURNITURE ÉLECTRIQUE]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="FOURNITURE DE PLOMBERIE">
                             <input type="checkbox" name="categories[]" value="FOURNITURE DE PLOMBERIE" id="cat14">
                             <label for="cat14">Fourniture de plomberie</label>
+                            <input type="number" class="category-price" name="category_price[FOURNITURE DE PLOMBERIE]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="TRANSPORT ET 1ER 30 MIN">
                             <input type="checkbox" name="categories[]" value="TRANSPORT ET 1ER 30 MIN" id="cat15">
                             <label for="cat15">Transport et 1er 30 min</label>
+                            <input type="number" class="category-price" name="category_price[TRANSPORT ET 1ER 30 MIN]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
-                        <div class="radio-item">
+                        <div class="radio-item" data-category="INSTRUMENTATION">
                             <input type="checkbox" name="categories[]" value="INSTRUMENTATION" id="cat16">
                             <label for="cat16">Instrumentation</label>
+                            <input type="number" class="category-price" name="category_price[INSTRUMENTATION]" step="0.01" min="0" placeholder="0.00" disabled>
                         </div>
                     </div>
                 </div>
@@ -1564,11 +1651,11 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                     <div class="form-row">
                         <div class="form-group">
                             <label for="appel_service">Service Call ($):</label>
-                            <input type="number" name="appel_service" id="appel_service" step="0.01" min="0" value="0" placeholder="0.00">
+                            <input type="number" name="appel_service" id="appel_service" step="0.01" min="0" value="35" placeholder="0.00">
                         </div>
                         <div class="form-group">
                             <label for="main_oeuvre">Labor ($):</label>
-                            <input type="number" name="main_oeuvre" id="main_oeuvre" step="0.01" min="0" value="0" placeholder="0.00">
+                            <input type="number" name="main_oeuvre" id="main_oeuvre" step="0.01" min="0" value="108" placeholder="0.00">
                         </div>
                     </div>
 
@@ -1642,27 +1729,60 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
 <script>
 // Gestion des équipements
-let equipmentCount = 1;
+let equipmentCount = document.querySelectorAll('.equipment-row').length;
 const maxEquipment = 15;
+
+function initializeEquipmentRow(row) {
+    const quantityInput = row.querySelector('.equipment-quantity');
+    const unitPriceInput = row.querySelector('.equipment-unit-price');
+    const totalPriceInput = row.querySelector('.equipment-total-price');
+    const nameInput = row.querySelector('input[name="equipment_name[]"]');
+
+    if (!quantityInput || !unitPriceInput || !totalPriceInput) {
+        return;
+    }
+
+    const updateTotals = () => {
+        const quantity = parseFloat(quantityInput.value) || 0;
+        const unitPrice = parseFloat(unitPriceInput.value) || 0;
+        const total = quantity * unitPrice;
+        totalPriceInput.value = total > 0 ? total.toFixed(2) : '0.00';
+        calculateBilling();
+    };
+
+    quantityInput.addEventListener('input', updateTotals);
+    unitPriceInput.addEventListener('input', updateTotals);
+    if (nameInput) {
+        nameInput.addEventListener('input', calculateBilling);
+    }
+    updateTotals();
+}
 
 function addEquipment() {
     if (equipmentCount >= maxEquipment) {
         alert('Maximum 15 equipment allowed');
         return;
     }
-    
-    equipmentCount++;
+
     const container = document.getElementById('equipment-container');
     const newRow = document.createElement('div');
     newRow.className = 'equipment-row';
     newRow.innerHTML = `
         <div class="form-group">
-            <label>Equipment Name:</label>
-            <input type="text" name="equipment_name[]" placeholder="Enter equipment name">
+            <label>Nom de l'équipement:</label>
+            <input type="text" name="equipment_name[]" placeholder="Nom de l'équipement">
         </div>
         <div class="form-group">
-            <label>Price ($):</label>
-            <input type="number" name="equipment_price[]" step="0.01" min="0" placeholder="0.00">
+            <label>Quantité:</label>
+            <input type="number" name="equipment_quantity[]" class="equipment-quantity" step="1" min="1" value="1">
+        </div>
+        <div class="form-group">
+            <label>Prix unitaire ($):</label>
+            <input type="number" name="equipment_unit_price[]" class="equipment-unit-price" step="0.01" min="0" placeholder="0.00">
+        </div>
+        <div class="form-group">
+            <label>Prix total ($):</label>
+            <input type="number" name="equipment_price[]" class="equipment-total-price" step="0.01" min="0" value="0.00" readonly>
         </div>
         <div>
             <button type="button" class="btn-remove" onclick="removeEquipment(this)">
@@ -1671,6 +1791,8 @@ function addEquipment() {
         </div>
     `;
     container.appendChild(newRow);
+    equipmentCount = document.querySelectorAll('.equipment-row').length;
+    initializeEquipmentRow(newRow);
 }
 
 function removeEquipment(button) {
@@ -1678,9 +1800,39 @@ function removeEquipment(button) {
         alert('At least one equipment is required');
         return;
     }
-    
+
     button.closest('.equipment-row').remove();
-    equipmentCount--;
+    equipmentCount = document.querySelectorAll('.equipment-row').length;
+    calculateBilling();
+}
+
+function setupCategoryPricing() {
+    document.querySelectorAll('.radio-item').forEach(item => {
+        const checkbox = item.querySelector('input[type="checkbox"]');
+        const priceInput = item.querySelector('.category-price');
+
+        if (!checkbox) {
+            return;
+        }
+
+        if (priceInput) {
+            const togglePriceInput = () => {
+                if (checkbox.checked) {
+                    priceInput.disabled = false;
+                } else {
+                    priceInput.value = '';
+                    priceInput.disabled = true;
+                }
+                calculateBilling();
+            };
+
+            checkbox.addEventListener('change', togglePriceInput);
+            priceInput.addEventListener('input', calculateBilling);
+            togglePriceInput();
+        } else {
+            checkbox.addEventListener('change', calculateBilling);
+        }
+    });
 }
 
 // Gestion de la prévisualisation des images
@@ -1732,71 +1884,62 @@ function updateFileInput() {
 
 // VALIDATION DES HEURES
 function validateTimes() {
-    const departBureau = document.getElementById('depart_bureau_time').value;
-    const arriveSite = document.getElementById('arrive_site_time').value;
-    const departSite = document.getElementById('depart_site_time').value;
-    const arriveBureau = document.getElementById('arrive_bureau_time').value;
-    
+    const arriveSiteInput = document.getElementById('arrive_site_time');
+    const departSiteInput = document.getElementById('depart_site_time');
+    const arriveSite = arriveSiteInput.value;
+    const departSite = departSiteInput.value;
+
     // Réinitialiser les erreurs
     document.querySelectorAll('.error-message').forEach(el => el.classList.remove('show'));
-    document.querySelectorAll('input[type="time"]').forEach(el => el.classList.remove('error'));
-    
+    [arriveSiteInput, departSiteInput].forEach(el => el.classList.remove('error'));
+
     let isValid = true;
-    
-    // Vérifier que toutes les heures sont remplies
-    if (!departBureau || !arriveSite || !departSite || !arriveBureau) {
+
+    if (!arriveSite) {
+        arriveSiteInput.classList.add('error');
+        document.getElementById('error_arrive_site').classList.add('show');
+        isValid = false;
+    }
+
+    if (!departSite) {
+        departSiteInput.classList.add('error');
+        document.getElementById('error_depart_site').classList.add('show');
+        isValid = false;
+    }
+
+    if (!isValid) {
         return false;
     }
-    
+
     // Convertir en minutes pour comparaison facile
     function timeToMinutes(time) {
         const [hours, minutes] = time.split(':').map(Number);
         return hours * 60 + minutes;
     }
-    
-    const departBureauMin = timeToMinutes(departBureau);
+
     const arriveSiteMin = timeToMinutes(arriveSite);
     const departSiteMin = timeToMinutes(departSite);
-    const arriveBureauMin = timeToMinutes(arriveBureau);
-    
-    // Validation 1: Arrivée site doit être après départ bureau
-    if (arriveSiteMin <= departBureauMin) {
-        document.getElementById('arrive_site_time').classList.add('error');
-        document.getElementById('error_arrive_site').classList.add('show');
-        isValid = false;
-    }
-    
-    // Validation 2: Départ site doit être après arrivée site
+
+    // Validation : Départ site doit être après arrivée site
     if (departSiteMin <= arriveSiteMin) {
-        document.getElementById('depart_site_time').classList.add('error');
+        departSiteInput.classList.add('error');
         document.getElementById('error_depart_site').classList.add('show');
         isValid = false;
     }
-    
-    // Validation 3: Retour bureau doit être après départ site
-    if (arriveBureauMin <= departSiteMin) {
-        document.getElementById('arrive_bureau_time').classList.add('error');
-        document.getElementById('error_arrive_bureau').classList.add('show');
-        isValid = false;
-    }
-    
+
     return isValid;
 }
 
 // Validation en temps réel
-document.getElementById('depart_bureau_time').addEventListener('change', validateTimes);
 document.getElementById('arrive_site_time').addEventListener('change', validateTimes);
 document.getElementById('depart_site_time').addEventListener('change', validateTimes);
-document.getElementById('arrive_bureau_time').addEventListener('change', validateTimes);
 
 // Validation avant soumission
 document.getElementById('loginform').addEventListener('submit', function(e) {
     if (!validateTimes()) {
         e.preventDefault();
         alert('❌ The times entered are not logical. Please verify:\n\n' +
-              '1. Site arrival must be AFTER office departure\n' +
-              '2. Site departure must be AFTER site arrival\n' +
-              '3. Office return must be AFTER site departure');
+              '1. Site departure must be AFTER site arrival');
         
         // Scroll vers la première erreur
         document.querySelector('.error').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1808,12 +1951,38 @@ document.getElementById('loginform').addEventListener('submit', function(e) {
 function calculateBilling() {
     const appelService = parseFloat(document.getElementById('appel_service').value) || 0;
     const mainOeuvre = parseFloat(document.getElementById('main_oeuvre').value) || 0;
-    
-    const sousTotal = appelService + mainOeuvre;
+
+    const equipmentTotal = Array.from(document.querySelectorAll('.equipment-row')).reduce((sum, row) => {
+        const nameInput = row.querySelector('input[name="equipment_name[]"]');
+        const totalInput = row.querySelector('.equipment-total-price');
+
+        if (!nameInput || !totalInput) {
+            return sum;
+        }
+
+        const equipmentName = nameInput.value.trim();
+        if (equipmentName === '') {
+            return sum;
+        }
+
+        const value = parseFloat(totalInput.value);
+        return sum + (isNaN(value) ? 0 : value);
+    }, 0);
+
+    const categoryTotal = Array.from(document.querySelectorAll('.category-price')).reduce((sum, input) => {
+        if (input.disabled) {
+            return sum;
+        }
+
+        const value = parseFloat(input.value);
+        return sum + (isNaN(value) ? 0 : value);
+    }, 0);
+
+    const sousTotal = appelService + mainOeuvre + equipmentTotal + categoryTotal;
     const tps = sousTotal * 0.05;
     const tvq = sousTotal * 0.09975;
     const total = sousTotal + tps + tvq;
-    
+
     document.getElementById('sous_total_display').textContent = sousTotal.toFixed(2) + ' $';
     document.getElementById('tps_display').textContent = tps.toFixed(2) + ' $';
     document.getElementById('tvq_display').textContent = tvq.toFixed(2) + ' $';
@@ -1822,6 +1991,10 @@ function calculateBilling() {
 
 document.getElementById('appel_service').addEventListener('input', calculateBilling);
 document.getElementById('main_oeuvre').addEventListener('input', calculateBilling);
+
+document.querySelectorAll('.equipment-row').forEach(row => initializeEquipmentRow(row));
+setupCategoryPricing();
+calculateBilling();
 
 // Fonction pour redimensionner correctement le canvas
 function resizeCanvas(canvas) {
