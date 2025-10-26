@@ -867,7 +867,15 @@ mysqli_close($connexion);
         }
         function formatDateTimeForDB(date) {
             if (!date) return '';
-            return new Date(date).toISOString().slice(0, 19).replace('T', ' ');
+            const d = new Date(date);
+            if (Number.isNaN(d.getTime())) return '';
+            const year = d.getFullYear();
+            const month = pad2(d.getMonth() + 1);
+            const day = pad2(d.getDate());
+            const hours = pad2(d.getHours());
+            const minutes = pad2(d.getMinutes());
+            const seconds = pad2(d.getSeconds());
+            return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
         }
         function ensureEndAfterStart() {
             const startStr = readTimeControls('start');
