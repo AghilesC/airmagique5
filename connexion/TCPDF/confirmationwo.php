@@ -18,7 +18,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     $partnerId = $_POST['partner'];
     $selectedEquipment = $_POST['equipement'];
-    $glpiTicketID = isset($_POST['glpi_ticket_id']) ? $_POST['glpi_ticket_id'] : '';
+    $poNumber = isset($_POST['po_number']) ? $_POST['po_number'] : '';
 
 
     $partnerQuery = "SELECT * FROM partner WHERE partner_id = '$partnerId'";
@@ -94,7 +94,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 $currentDateTime = date("Y-m-d H:i:s");
 
                 $insertQuery = $conn->prepare("INSERT INTO history (partner_id, tech_name, ticket_id, equipment, date, address) VALUES (?, ?, ?, ?, ?, ?)");
-                $insertQuery->bind_param("isssss", $partnerId, $userFullName, $glpiTicketID, $selectedEquipment, $currentDateTime, $partnerAddress);
+                $insertQuery->bind_param("isssss", $partnerId, $userFullName, $poNumber, $selectedEquipment, $currentDateTime, $partnerAddress);
 
                 if ($insertQuery->execute()) {
                     header('Location: ../confirmation/confirmation.php');

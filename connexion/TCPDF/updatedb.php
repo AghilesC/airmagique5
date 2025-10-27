@@ -2,7 +2,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     
     $partnerId = $_POST['partner'];
     $selectedEquipment = $_POST['equipement'];
-    $ticketID = $_POST['glpi_ticket_id'];
+    $ticketID = $_POST['po_number'];
 
 
 

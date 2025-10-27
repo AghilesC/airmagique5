@@ -6,15 +6,15 @@ $userFullName = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-if (isset($_GET['pdf']) && isset($_GET['glpi_ticket_id']) && isset($_GET['emailtech'])) {
+if (isset($_GET['pdf']) && isset($_GET['emailtech']) && (isset($_GET['po_number']) || isset($_GET['glpi_ticket_id']))) {
     $pdfFileName = $_GET['pdf'];
-    $glpiTicketID = $_GET['glpi_ticket_id'];
-    $emailtech = $_GET['emailtech'];  
-    $emailpartner = $_GET['emailpartner'];  
+    $poNumber = isset($_GET['po_number']) ? $_GET['po_number'] : $_GET['glpi_ticket_id'];
+    $emailtech = $_GET['emailtech'];
+    $emailpartner = $_GET['emailpartner'];
     $clientName = isset($_GET['client_name']) ? $_GET['client_name'] : '';
     $nbCustomer = isset($_GET['nb_customer']) ? $_GET['nb_customer'] : '';
     $draft_id = isset($_GET['draft_id']) ? $_GET['draft_id'] : '';
-    $pdfFileNameWithGLPI = "wo-$glpiTicketID.pdf";
+    $pdfFileNameWithPo = "wo-$poNumber.pdf";
 
     // $smtpHost = 'smtp.office365.com';
     // $smtpUsername = 'wo-automatic@ctiai.com';
@@ -23,9 +23,9 @@ if (isset($_GET['pdf']) && isset($_GET['glpi_ticket_id']) && isset($_GET['emailt
 
     // $toEmail = 'service@ctiai.com';
 
-    $subject = "WO $glpiTicketID - $clientName - $nbCustomer - $userFullName";
-    
-    $message = "Bonjour,\n\nWO #$glpiTicketID\nClient : $clientName\nLocalisation : $nbCustomer\nFermé par : $userFullName.\n\nMerci et bonne journée !";
+    $subject = "WO $poNumber - $clientName - $nbCustomer - $userFullName";
+
+    $message = "Bonjour,\n\nWO #$poNumber\nClient : $clientName\nLocalisation : $nbCustomer\nFermé par : $userFullName.\n\nMerci et bonne journée !";
 
     $mail = new PHPMailer(true);
 
@@ -49,7 +49,7 @@ if (isset($_GET['pdf']) && isset($_GET['glpi_ticket_id']) && isset($_GET['emailt
         $mail->Subject = $subject;
         $mail->Body = $message;
 
-        $mail->addAttachment($pdfFileName, $pdfFileNameWithGLPI);
+        $mail->addAttachment($pdfFileName, $pdfFileNameWithPo);
 
         $mail->CharSet = 'UTF-8';
 
