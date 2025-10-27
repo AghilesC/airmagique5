@@ -1088,12 +1088,13 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
         .radio-item {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
             flex-wrap: wrap;
         }
 
         .radio-item label {
             margin-right: auto;
+            flex: 1 1 auto;
         }
 
         .category-grid {
@@ -1105,6 +1106,7 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
         .category-price {
             margin-left: auto;
             max-width: 140px;
+            flex: 0 0 auto;
         }
 
         .category-price:disabled {
@@ -1430,6 +1432,35 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
             .equipment-row {
                 grid-template-columns: 1fr;
+            }
+
+            .category-grid {
+                gap: 16px;
+            }
+
+            .radio-item {
+                flex-direction: column;
+                align-items: flex-start;
+                padding: 12px;
+                border: 1px solid #e9ecef;
+                border-radius: 8px;
+                gap: 12px;
+            }
+
+            .radio-item label {
+                margin-right: 0;
+                width: 100%;
+            }
+
+            .radio-item input[type="checkbox"],
+            .radio-item input[type="radio"] {
+                margin-right: 0;
+            }
+
+            .category-price {
+                width: 100%;
+                max-width: none;
+                margin-left: 0;
             }
 
             .btn-group {
