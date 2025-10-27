@@ -15,12 +15,69 @@ $userId = $_SESSION['user_id'];
 $userFullName = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
 $depotID = $_SESSION['depot'];
 
+// Générer ou récupérer le numéro de bon de commande (PO) en session
+$currentPONumber = $_SESSION['glpi_ticket_id'] ?? null;
+$currentWorkOrderId = $_SESSION['work_order_id'] ?? null;
+
+if (!$currentPONumber || !$currentWorkOrderId) {
+    $poConnection = mysqli_connect($dbhost, $dbuser, $dbpwd, $dbname);
+
+    if ($poConnection && !$poConnection->connect_error) {
+        if ($poConnection->autocommit(false)) {
+            $temporaryPoNumber = uniqid('TMP-PO-');
+            $emptyDescription = '';
+
+            $insertStmt = $poConnection->prepare("INSERT INTO work_orders (po_number, description) VALUES (?, ?)");
+            if ($insertStmt) {
+                $insertStmt->bind_param("ss", $temporaryPoNumber, $emptyDescription);
+
+                if ($insertStmt->execute()) {
+                    $newWorkOrderId = $poConnection->insert_id;
+                    $generatedPoNumber = 'PO' . $newWorkOrderId;
+
+                    $updateStmt = $poConnection->prepare("UPDATE work_orders SET po_number = ? WHERE id = ?");
+                    if ($updateStmt) {
+                        $updateStmt->bind_param("si", $generatedPoNumber, $newWorkOrderId);
+
+                        if ($updateStmt->execute()) {
+                            $poConnection->commit();
+                            $_SESSION['work_order_id'] = $newWorkOrderId;
+                            $_SESSION['glpi_ticket_id'] = $generatedPoNumber;
+                            $currentWorkOrderId = $newWorkOrderId;
+                            $currentPONumber = $generatedPoNumber;
+                        } else {
+                            $poConnection->rollback();
+                            error_log('Failed to update PO number for work order ID ' . $newWorkOrderId . ': ' . $updateStmt->error);
+                        }
+
+                        $updateStmt->close();
+                    } else {
+                        $poConnection->rollback();
+                        error_log('Failed to prepare PO number update statement: ' . $poConnection->error);
+                    }
+                } else {
+                    $poConnection->rollback();
+                    error_log('Failed to insert temporary work order record: ' . $insertStmt->error);
+                }
+
+                $insertStmt->close();
+            } else {
+                error_log('Failed to prepare work order insert statement: ' . $poConnection->error);
+            }
+
+            $poConnection->autocommit(true);
+        } else {
+            error_log('Failed to disable autocommit when generating PO number: ' . $poConnection->error);
+        }
+
+        $poConnection->close();
+    } else {
+        error_log('Database connection error while generating PO number: ' . ($poConnection ? $poConnection->connect_error : 'unknown error'));
+    }
+}
+
 // Traitement du formulaire
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    if(isset($_POST['glpi_ticket_id'])) {
-        $_SESSION['glpi_ticket_id'] = $_POST['glpi_ticket_id'];
-    }
-    
     // Récupérer les équipements et leurs prix
     $equipmentNames = $_POST['equipment_name'] ?? array();
     $equipmentQuantities = $_POST['equipment_quantity'] ?? array();
@@ -81,6 +138,31 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         'main_oeuvre' => floatval($_POST['main_oeuvre'] ?? 0),
         'category_prices' => $categoryPrices
     ];
+
+    if ($currentWorkOrderId) {
+        $poDescription = 'Client: ' . ($formData['client_name'] ?: 'N/A') .
+            ' | Work date: ' . ($formData['work_date'] ?: 'N/A') .
+            ' | Technician: ' . $userFullName .
+            ' | Summary: ' . ($formData['description'] ?: '');
+        $poDescription = substr($poDescription, 0, 65535);
+
+        $poUpdateConnection = mysqli_connect($dbhost, $dbuser, $dbpwd, $dbname);
+        if ($poUpdateConnection && !$poUpdateConnection->connect_error) {
+            $updateStmt = $poUpdateConnection->prepare("UPDATE work_orders SET description = ? WHERE id = ?");
+            if ($updateStmt) {
+                $updateStmt->bind_param("si", $poDescription, $currentWorkOrderId);
+                if (!$updateStmt->execute()) {
+                    error_log('Failed to update work order description for ID ' . $currentWorkOrderId . ': ' . $updateStmt->error);
+                }
+                $updateStmt->close();
+            } else {
+                error_log('Failed to prepare work order description update: ' . $poUpdateConnection->error);
+            }
+            $poUpdateConnection->close();
+        } else {
+            error_log('Database connection error while updating work order description: ' . ($poUpdateConnection ? $poUpdateConnection->connect_error : 'unknown error'));
+        }
+    }
 
     // Calculs de facturation
     $appelService = $formData['appel_service'];
@@ -200,7 +282,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $pdf->SetXY(175, 12);
     $pdf->SetFont('helvetica', 'B', 12);
     $pdf->SetTextColor(200, 0, 0);
-    $pdf->Cell(35, 10, $_POST['glpi_ticket_id'] ?? '', 1, 0, 'C');
+    $pdf->Cell(35, 10, $_SESSION['glpi_ticket_id'] ?? 'N/A', 1, 0, 'C');
     $pdf->SetTextColor(0, 0, 0);
 
     // Ligne avec la date du formulaire
@@ -933,6 +1015,8 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
     // Affichage direct du PDF
     $pdf->Output('workorder_airmagique.pdf', 'I');
+
+    unset($_SESSION['work_order_id'], $_SESSION['glpi_ticket_id']);
     exit;
 }
 ?>
@@ -1536,8 +1620,8 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
             <form method="post" action="" enctype="multipart/form-data" id="loginform">
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="glpi_ticket_id">GLPI #/PO #:</label>
-                        <input type="text" id="glpi_ticket_id" name="glpi_ticket_id" pattern="\d{10,}" title="The number must contain at least 10 digits minimum" minlength="10" required placeholder="Required">
+                        <label for="po_number">PO #:</label>
+                        <input type="text" id="po_number" name="glpi_ticket_id" value="<?php echo htmlspecialchars($currentPONumber ?? 'N/A'); ?>" readonly>
                     </div>
                     <div class="form-group">
                         <label for="technician_name">Technician Name:</label>
