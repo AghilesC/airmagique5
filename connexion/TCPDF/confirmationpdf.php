@@ -1914,8 +1914,10 @@ function setupCategoryPricing() {
             const togglePriceInput = () => {
                 if (checkbox.checked) {
                     priceInput.disabled = false;
+                    priceInput.required = true;
                 } else {
                     priceInput.value = '';
+                    priceInput.required = false;
                     priceInput.disabled = true;
                 }
                 calculateBilling();
