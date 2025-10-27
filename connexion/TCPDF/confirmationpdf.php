@@ -681,6 +681,31 @@ if ($mainOeuvre == 0) {
 }
 $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
+// ÉQUIPEMENT
+$pdf->SetX($checkboxX);
+$pdf->SetFillColor(160, 160, 160);
+$pdf->Cell(($labelWidth + $checkboxWidth), 7, 'ÉQUIPEMENT', 'LTB', 0, 'L', true);
+$pdf->SetFillColor(0, 0, 0);
+$pdf->Cell($separatorWidth, 7, '', 'TB', 0, 'C', true);
+$pdf->SetFillColor(255, 255, 255);
+
+if ($equipmentTotal == 0) {
+    $dotWidth = $pdf->GetStringWidth('.');
+    $dollarWidth = $pdf->GetStringWidth('$');
+    $availableSpace = $valueWidth - $dollarWidth - 2;
+    $numDots = floor($availableSpace / $dotWidth);
+    $displayValue = str_repeat('.', max(0, $numDots)) . '$';
+} else {
+    $valueStr = number_format($equipmentTotal, 2, '.', ' ');
+    $dollarWidth = $pdf->GetStringWidth('$');
+    $valueStrWidth = $pdf->GetStringWidth($valueStr);
+    $dotWidth = $pdf->GetStringWidth('.');
+    $availableSpace = $valueWidth - $valueStrWidth - $dollarWidth - 3;
+    $numDots = floor($availableSpace / $dotWidth);
+    $displayValue = str_repeat('.', max(0, $numDots)) . $valueStr . ' $';
+}
+$pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
+
 // SOUS TOTAL
 $pdf->SetX($checkboxX);
 $pdf->SetFillColor(160, 160, 160);
@@ -1088,12 +1113,13 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
         .radio-item {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
             flex-wrap: wrap;
         }
 
         .radio-item label {
             margin-right: auto;
+            flex: 1 1 auto;
         }
 
         .category-grid {
@@ -1105,6 +1131,7 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
         .category-price {
             margin-left: auto;
             max-width: 140px;
+            flex: 0 0 auto;
         }
 
         .category-price:disabled {
@@ -1432,6 +1459,35 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                 grid-template-columns: 1fr;
             }
 
+            .category-grid {
+                gap: 16px;
+            }
+
+            .radio-item {
+                flex-direction: column;
+                align-items: flex-start;
+                padding: 12px;
+                border: 1px solid #e9ecef;
+                border-radius: 8px;
+                gap: 12px;
+            }
+
+            .radio-item label {
+                margin-right: 0;
+                width: 100%;
+            }
+
+            .radio-item input[type="checkbox"],
+            .radio-item input[type="radio"] {
+                margin-right: 0;
+            }
+
+            .category-price {
+                width: 100%;
+                max-width: none;
+                margin-left: 0;
+            }
+
             .btn-group {
                 flex-direction: column;
             }
@@ -1712,6 +1768,10 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                     </div>
 
                     <div class="billing-row">
+                        <span class="billing-label">Equipment Total:</span>
+                        <span class="billing-value" id="equipment_total_display">0.00 $</span>
+                    </div>
+                    <div class="billing-row">
                         <span class="billing-label">Subtotal:</span>
                         <span class="billing-value" id="sous_total_display">0.00 $</span>
                     </div>
@@ -1763,10 +1823,17 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                 <div class="form-group">
                     <label for="upload_files">Upload Files:</label>
                     <div class="file-input-wrapper">
-                        <input type="file" name="uploaded_files[]" multiple id="upload_files" accept="image/jpeg,image/jpg,image/png">
+                        <input type="file" name="uploaded_files[]" multiple id="upload_files" accept="image/*">
                         <label for="upload_files" class="file-input-label">
                             <i class="fas fa-cloud-upload-alt"></i>
                             Choose files... (JPG, JPEG, PNG)
+                        </label>
+                    </div>
+                    <div class="file-input-wrapper" style="margin-top: 10px;">
+                        <input type="file" name="uploaded_files[]" id="capture_photo" accept="image/*" capture="environment">
+                        <label for="capture_photo" class="file-input-label">
+                            <i class="fas fa-camera"></i>
+                            Take a photo
                         </label>
                     </div>
                     <div id="image-preview-container" class="image-preview-container"></div>
@@ -1883,8 +1950,10 @@ function setupCategoryPricing() {
             const togglePriceInput = () => {
                 if (checkbox.checked) {
                     priceInput.disabled = false;
+                    priceInput.required = true;
                 } else {
                     priceInput.value = '';
+                    priceInput.required = false;
                     priceInput.disabled = true;
                 }
                 calculateBilling();
@@ -1902,11 +1971,27 @@ function setupCategoryPricing() {
 // Gestion de la prévisualisation des images
 let selectedFiles = [];
 
-document.getElementById('upload_files').addEventListener('change', function(e) {
-    const files = Array.from(e.target.files);
-    selectedFiles = [...selectedFiles, ...files];
-    displayImagePreviews();
-});
+const uploadInput = document.getElementById('upload_files');
+const captureInput = document.getElementById('capture_photo');
+
+if (uploadInput) {
+    uploadInput.addEventListener('change', function(e) {
+        const files = Array.from(e.target.files);
+        selectedFiles = [...selectedFiles, ...files];
+        displayImagePreviews();
+    });
+}
+
+if (captureInput) {
+    captureInput.addEventListener('change', function(e) {
+        const files = Array.from(e.target.files);
+        if (files.length) {
+            selectedFiles = [...selectedFiles, ...files];
+            displayImagePreviews();
+            captureInput.value = '';
+        }
+    });
+}
 
 function displayImagePreviews() {
     const container = document.getElementById('image-preview-container');
@@ -1943,7 +2028,9 @@ function removeImage(index) {
 function updateFileInput() {
     const dt = new DataTransfer();
     selectedFiles.forEach(file => dt.items.add(file));
-    document.getElementById('upload_files').files = dt.files;
+    if (uploadInput) {
+        uploadInput.files = dt.files;
+    }
 }
 
 // VALIDATION DES HEURES
@@ -2034,6 +2121,7 @@ function calculateBilling() {
     const tvq = sousTotal * 0.09975;
     const total = sousTotal + tps + tvq;
 
+    document.getElementById('equipment_total_display').textContent = equipmentTotal.toFixed(2) + ' $';
     document.getElementById('sous_total_display').textContent = sousTotal.toFixed(2) + ' $';
     document.getElementById('tps_display').textContent = tps.toFixed(2) + ' $';
     document.getElementById('tvq_display').textContent = tvq.toFixed(2) + ' $';
