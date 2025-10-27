@@ -3,6 +3,49 @@ require('tcpdf.php');
 include "../../config.php";
 
 include_once "../logincheck.php";
+
+function reservePoNumber(mysqli $connection, string $userFullName): ?array {
+    try {
+        if (!$connection->begin_transaction()) {
+            throw new Exception('Unable to start transaction for PO reservation.');
+        }
+
+        $placeholder = sprintf('Reserved for %s on %s', $userFullName, date('Y-m-d H:i:s'));
+        $insertStmt = $connection->prepare("INSERT INTO work_orders (description) VALUES (?)");
+        if (!$insertStmt) {
+            throw new Exception('Failed to prepare work order reservation statement.');
+        }
+
+        $insertStmt->bind_param("s", $placeholder);
+        if (!$insertStmt->execute()) {
+            throw new Exception('Failed to reserve work order row.');
+        }
+
+        $workOrderId = $connection->insert_id;
+        $poNumber = sprintf('PO-%d', $workOrderId);
+
+        $updateStmt = $connection->prepare("UPDATE work_orders SET po_number = ? WHERE id = ?");
+        if (!$updateStmt) {
+            throw new Exception('Failed to prepare PO update statement.');
+        }
+
+        $updateStmt->bind_param("si", $poNumber, $workOrderId);
+        if (!$updateStmt->execute()) {
+            throw new Exception('Failed to persist generated PO number.');
+        }
+
+        if (!$connection->commit()) {
+            throw new Exception('Unable to commit PO reservation transaction.');
+        }
+
+        return ['po_number' => $poNumber, 'id' => $workOrderId];
+    } catch (Throwable $exception) {
+        $connection->rollback();
+        error_log('[work_orders] ' . $exception->getMessage());
+    }
+
+    return null;
+}
 $mail = $_SESSION['mail'];
 $partner_email = $_SESSION['partner_email'];
 $userId = $_SESSION['user_id'];
@@ -16,13 +59,50 @@ if (isset($_GET['draft_id']) && !empty($_GET['draft_id'])) {
     die("❌ No draft selected. Please go back and choose a draft.");
 }
 
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
+$mail = $_SESSION['mail'];
+$partner_email = $_SESSION['partner_email'];
+$userId = $_SESSION['user_id'];
+$userFullName = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
 
-    if(isset($_POST['glpi_ticket_id'])) {
+$poNumber = $_SESSION['po_number'] ?? null;
+$workOrderId = $_SESSION['work_order_id'] ?? null;
 
-        $_SESSION['glpi_ticket_id'] = $_POST['glpi_ticket_id'];
+if (!empty($_SESSION['po_number_committed'])) {
+    $_SESSION['last_po_number'] = $poNumber;
+    unset($_SESSION['po_number'], $_SESSION['work_order_id'], $_SESSION['po_number_committed']);
+    $poNumber = null;
+    $workOrderId = null;
+}
+
+$dbPortValue = isset($dbport) ? (int)$dbport : 3306;
+$poConnection = @new mysqli($dbhost, $dbuser, $dbpwd, $dbname, $dbPortValue);
+if ($poConnection && !$poConnection->connect_error && !$poNumber) {
+    $reservation = reservePoNumber($poConnection, $userFullName);
+    if ($reservation) {
+        $poNumber = $reservation['po_number'];
+        $workOrderId = $reservation['id'];
+        $_SESSION['po_number'] = $poNumber;
+        $_SESSION['work_order_id'] = $workOrderId;
     }
-    
+}
+
+if ($poConnection) {
+    $poConnection->close();
+}
+
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
+    if (empty($poNumber)) {
+        $poNumber = $_SESSION['po_number'] ?? ($_POST['po_number'] ?? '');
+    }
+
+    if (!empty($poNumber)) {
+        $_SESSION['po_number'] = $poNumber;
+        $_SESSION['last_po_number'] = $poNumber;
+    }
+
+    if (empty($workOrderId)) {
+        $workOrderId = $_SESSION['work_order_id'] ?? null;
+    }
 }
 
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
@@ -50,13 +130,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
     $pdf->SetXY($pdf->getPageWidth() - 50, 12);
     $pdf->SetFont('helvetica', 'B', 12);
-    $pdf->Cell(0, 10, 'GLPI #:', 0, 1);
+    $pdf->Cell(0, 10, 'PO #:', 0, 1);
 
 
     $pdf->SetXY($pdf->getPageWidth() - 50, 17);
     $pdf->SetFont('helvetica', '', 9);
-    $glpiTicketID = isset($_POST['glpi_ticket_id']) ? $_POST['glpi_ticket_id'] : '';
-    $pdf->Cell(0, 10, $glpiTicketID, 0, 1);
+    $pdf->Cell(0, 10, $poNumber, 0, 1);
 
 
     $pdf->SetXY($pdf->getPageWidth() - 50, 22);
@@ -66,8 +145,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
     $pdf->SetXY($pdf->getPageWidth() - 50, 27);
     $pdf->SetFont('helvetica', '', 9);
-    $glpiTicketID = isset($_POST['nb_customer']) ? $_POST['nb_customer'] : '';
-    $pdf->Cell(0, 10, $glpiTicketID, 0, 1);
+    $storeIdentifier = isset($_POST['nb_customer']) ? $_POST['nb_customer'] : '';
+    $pdf->Cell(0, 10, $storeIdentifier, 0, 1);
 
 
 
@@ -83,9 +162,28 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $signatureImageData = isset($_POST['signature']) ? $_POST['signature'] : '';
     $signatureImageData2 = isset($_POST['signature2']) ? $_POST['signature2'] : '';
     $emailtech = isset($_POST['emailtech']) ? $_POST['emailtech'] : ''; 
-    $emailpartner = isset($_POST['emailpartner']) ? $_POST['emailpartner'] : ''; 
+    $emailpartner = isset($_POST['emailpartner']) ? $_POST['emailpartner'] : '';
     $equipement = isset($_POST['equipement']) ? $_POST['equipement'] : array();
     $work_date = isset($_POST['date']) ? $_POST['date'] : '';
+
+    if ($workOrderId && $poNumber) {
+        $updateConnection = @new mysqli($dbhost, $dbuser, $dbpwd, $dbname, $dbPortValue);
+        if ($updateConnection && !$updateConnection->connect_error) {
+            $updateStmt = $updateConnection->prepare("UPDATE work_orders SET description = ? WHERE id = ?");
+            if ($updateStmt) {
+                $updateStmt->bind_param("si", $description, $workOrderId);
+                if (!$updateStmt->execute()) {
+                    error_log('[work_orders] Failed to update work order description (draft flow): ' . $updateStmt->error);
+                }
+                $updateStmt->close();
+            } else {
+                error_log('[work_orders] Failed to prepare description update statement (draft flow): ' . $updateConnection->error);
+            }
+            $updateConnection->close();
+        } else {
+            error_log('[work_orders] Unable to connect for description update (draft flow): ' . ($updateConnection ? $updateConnection->connect_error : 'connection failed'));
+        }
+    }
 
     // Convertir les équipements sélectionnés en une chaîne séparée par des virgules
     $equipementText = implode(', ', $equipement);
@@ -429,13 +527,13 @@ if (!empty($_FILES['uploaded_files']['tmp_name'])) {
 
 
 
-// Vérifier si la valeur glpi_ticket_id est définie dans la session
-if (isset($_SESSION['glpi_ticket_id'])) {
-    // Récupérer la valeur de glpi_ticket_id depuis la session
-    $glpi_ticket_id = $_SESSION['glpi_ticket_id'];
+// Préparer le numéro de PO pour l'interface d'ajout d'équipement
+if (isset($_SESSION['po_number'])) {
+    $poNumberForForm = $_SESSION['po_number'];
+} elseif (isset($_SESSION['last_po_number'])) {
+    $poNumberForForm = $_SESSION['last_po_number'];
 } else {
-    // Si la valeur n'est pas définie dans la session, initialiser à une chaîne vide
-    $glpi_ticket_id = "";
+    $poNumberForForm = "";
 }
 
 // Vérifiez si les valeurs de la liste multiple sont présentes dans la variable de session
@@ -460,7 +558,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     $selectedEquipment = $_POST['equipement'];
 
-    $glpiticketID = $_POST['ticket_id'];
+    $glpiticketID = $_POST['po_number'];
 
 
     $partnerQuery = "SELECT * FROM partner WHERE partner_id = '$depotID'";
@@ -542,7 +640,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 if ($conn->query($updateQuery) === TRUE) {
                     $currentDateTime = date("Y-m-d H:i:s");
                     $insertQuery = $conn->prepare("INSERT INTO history (partner_id, tech_name, ticket_id, equipment, date, address) VALUES (?, ?, ?, ?, ?, ?)");
-                    $insertQuery->bind_param("isssss", $depotID, $userFullName, $glpi_ticket_id, $selectedEquipment, $currentDateTime, $partnerAddress);
+                    $insertQuery->bind_param("isssss", $depotID, $userFullName, $poNumber, $selectedEquipment, $currentDateTime, $partnerAddress);
 
                     if ($insertQuery->execute()) {
                         // Continuez le traitement ou redirigez comme nécessaire
@@ -555,13 +653,14 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $pdf->Output($pdfFileName, 'F');
 
 
-    $glpiTicketID = isset($_POST['glpi_ticket_id']) ? $_POST['glpi_ticket_id'] : '';
+    $poNumberForEmail = $poNumber;
     $nbCustomer = isset($_POST['nb_customer']) ? $_POST['nb_customer'] : '';
+    $_SESSION['po_number_committed'] = true;
     $clientName = isset($_POST['client_name']) ? $_POST['client_name'] : '';
     $draft_id = isset($_POST['draft_id']) ? intval($_POST['draft_id']) : 0;
 
     // Ajout du paramètre client_name à la chaîne de requête
-    header("Location: envoiwo2.php?draft_id=$draft_id&pdf=$pdfFileName&glpi_ticket_id=$glpiTicketID&emailtech=$emailtech&emailpartner=$emailpartner&client_name=$clientName&nb_customer=$nbCustomer");
+    header("Location: envoiwo2.php?draft_id=$draft_id&pdf=$pdfFileName&po_number=$poNumberForEmail&emailtech=$emailtech&emailpartner=$emailpartner&client_name=$clientName&nb_customer=$nbCustomer");
     exit;
 
     
@@ -591,7 +690,15 @@ if (isset($_GET['draft_id'])) {
 
     if ($draft) {
         // Populate form fields with draft data
-        $glpi_ticket_id = $draft['glpi_ticket_id'];
+        $poNumberFromDraft = $draft['glpi_ticket_id'];
+        if (!empty($poNumberFromDraft)) {
+            $poNumberForForm = $poNumberFromDraft;
+            if (empty($poNumber)) {
+                $poNumber = $poNumberFromDraft;
+            }
+            $_SESSION['po_number'] = $poNumberFromDraft;
+            $_SESSION['last_po_number'] = $poNumberFromDraft;
+        }
         $client_name = $draft['client_name'];
         $nb_customer = $draft['nb_customer'];
         $contact_name = $draft['contact_name'];
@@ -644,8 +751,8 @@ updated by wassim 2024 ©-->
 <form method="post" action="" enctype="multipart/form-data" id="loginform">
 
 
-<label for="glpi_ticket_id">GLPI #/PO #:</label>
-<input type="text" name="glpi_ticket_id" value="<?php echo htmlspecialchars($glpi_ticket_id); ?>" pattern="\d{10,}" title="The number must contain at least 10 digits minimum/Le numéro doit contenir au moins 10 chiffres minimum" minlength="10" required placeholder="required / requis">
+<label for="po_number">PO #:</label>
+<input type="text" id="po_number" name="po_number" value="<?php echo htmlspecialchars($poNumberForForm ?: $poNumber); ?>" readonly required placeholder="Generated automatically">
 
         
         <label for="client_name">Nom de la compagnie du client :</label>

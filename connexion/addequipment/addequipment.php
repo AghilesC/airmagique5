@@ -11,13 +11,13 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Vérifier si la valeur glpi_ticket_id est définie dans la session
-if (isset($_SESSION['glpi_ticket_id'])) {
-    // Récupérer la valeur de glpi_ticket_id depuis la session
-    $glpi_ticket_id = $_SESSION['glpi_ticket_id'];
+// Vérifier si un numéro de PO est disponible dans la session
+if (isset($_SESSION['po_number'])) {
+    $poNumber = $_SESSION['po_number'];
+} elseif (isset($_SESSION['last_po_number'])) {
+    $poNumber = $_SESSION['last_po_number'];
 } else {
-    // Si la valeur n'est pas définie dans la session, initialiser à une chaîne vide
-    $glpi_ticket_id = "";
+    $poNumber = "";
 }
 
 // Vérifiez si les valeurs de la liste multiple sont présentes dans la variable de session
@@ -151,7 +151,8 @@ $conn->close();
 
 
 // Supprimez la valeur de la session pour éviter de l'afficher à nouveau
-unset($_SESSION['glpi_ticket_id']);
+unset($_SESSION['po_number']);
+unset($_SESSION['work_order_id']);
 // Supprimez la valeur de la session pour éviter de l'afficher à nouveau
 unset($_SESSION['equipement_selected']);
 
@@ -171,7 +172,7 @@ unset($_SESSION['equipement_selected']);
         <h1>Inventory Update / MAJ Inventaire</h1>
         <form id="my-form" action="" method="POST" onsubmit="return confirmSubmission()">
         <div class="form-group">
-        <input type="text" id="ticket_id" name="ticket_id" value="<?php echo $glpi_ticket_id; ?>" required pattern="\d{10,}" title="The ticket ID must contain at least 10 digits minimum/Le ticket ID doit comporter au moins 10 chiffres minimum" placeholder="Enter Ticket ID">
+        <input type="text" id="ticket_id" name="ticket_id" value="<?php echo htmlspecialchars($poNumber); ?>" readonly required placeholder="PO number">
 <span class="error-message" style="color: red;"></span>
             </div>
 

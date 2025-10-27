@@ -3,6 +3,49 @@ require('tcpdf.php');
 include "../../config.php";
 include_once "../logincheck.php";
 
+function reservePoNumber(mysqli $connection, string $userFullName): ?array {
+    try {
+        if (!$connection->begin_transaction()) {
+            throw new Exception('Unable to start transaction for PO reservation.');
+        }
+
+        $placeholder = sprintf('Reserved for %s on %s', $userFullName, date('Y-m-d H:i:s'));
+        $insertStmt = $connection->prepare("INSERT INTO work_orders (description) VALUES (?)");
+        if (!$insertStmt) {
+            throw new Exception('Failed to prepare work order reservation statement.');
+        }
+
+        $insertStmt->bind_param("s", $placeholder);
+        if (!$insertStmt->execute()) {
+            throw new Exception('Failed to reserve work order row.');
+        }
+
+        $workOrderId = $connection->insert_id;
+        $poNumber = sprintf('PO-%d', $workOrderId);
+
+        $updateStmt = $connection->prepare("UPDATE work_orders SET po_number = ? WHERE id = ?");
+        if (!$updateStmt) {
+            throw new Exception('Failed to prepare PO update statement.');
+        }
+
+        $updateStmt->bind_param("si", $poNumber, $workOrderId);
+        if (!$updateStmt->execute()) {
+            throw new Exception('Failed to persist generated PO number.');
+        }
+
+        if (!$connection->commit()) {
+            throw new Exception('Unable to commit PO reservation transaction.');
+        }
+
+        return ['po_number' => $poNumber, 'id' => $workOrderId];
+    } catch (Throwable $exception) {
+        $connection->rollback();
+        error_log('[work_orders] ' . $exception->getMessage());
+    }
+
+    return null;
+}
+
 class MYPDF extends TCPDF {
     public function Header() {}
     public function Footer() {}
@@ -15,10 +58,45 @@ $userId = $_SESSION['user_id'];
 $userFullName = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
 $depotID = $_SESSION['depot'];
 
+$poNumber = $_SESSION['po_number'] ?? null;
+$workOrderId = $_SESSION['work_order_id'] ?? null;
+
+if (!empty($_SESSION['po_number_committed'])) {
+    $_SESSION['last_po_number'] = $poNumber;
+    unset($_SESSION['po_number'], $_SESSION['work_order_id'], $_SESSION['po_number_committed']);
+    $poNumber = null;
+    $workOrderId = null;
+}
+
+$dbPortValue = isset($dbport) ? (int)$dbport : 3306;
+$poConnection = @new mysqli($dbhost, $dbuser, $dbpwd, $dbname, $dbPortValue);
+if ($poConnection && !$poConnection->connect_error && !$poNumber) {
+    $reservation = reservePoNumber($poConnection, $userFullName);
+    if ($reservation) {
+        $poNumber = $reservation['po_number'];
+        $workOrderId = $reservation['id'];
+        $_SESSION['po_number'] = $poNumber;
+        $_SESSION['work_order_id'] = $workOrderId;
+    }
+}
+
+if ($poConnection) {
+    $poConnection->close();
+}
+
 // Traitement du formulaire
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    if(isset($_POST['glpi_ticket_id'])) {
-        $_SESSION['glpi_ticket_id'] = $_POST['glpi_ticket_id'];
+    if (empty($poNumber)) {
+        $poNumber = $_SESSION['po_number'] ?? ($_POST['po_number'] ?? '');
+    }
+
+    if (!empty($poNumber)) {
+        $_SESSION['po_number'] = $poNumber;
+        $_SESSION['last_po_number'] = $poNumber;
+    }
+
+    if (empty($workOrderId)) {
+        $workOrderId = $_SESSION['work_order_id'] ?? null;
     }
     
     // Récupérer les équipements et leurs prix
@@ -81,6 +159,26 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         'main_oeuvre' => floatval($_POST['main_oeuvre'] ?? 0),
         'category_prices' => $categoryPrices
     ];
+
+    if ($workOrderId && $poNumber) {
+        $descriptionValue = $formData['description'] ?? '';
+        $updateConnection = @new mysqli($dbhost, $dbuser, $dbpwd, $dbname, $dbPortValue);
+        if ($updateConnection && !$updateConnection->connect_error) {
+            $updateStmt = $updateConnection->prepare("UPDATE work_orders SET description = ? WHERE id = ?");
+            if ($updateStmt) {
+                $updateStmt->bind_param("si", $descriptionValue, $workOrderId);
+                if (!$updateStmt->execute()) {
+                    error_log('[work_orders] Failed to update work order description: ' . $updateStmt->error);
+                }
+                $updateStmt->close();
+            } else {
+                error_log('[work_orders] Failed to prepare description update statement: ' . $updateConnection->error);
+            }
+            $updateConnection->close();
+        } else {
+            error_log('[work_orders] Unable to connect for description update: ' . ($updateConnection ? $updateConnection->connect_error : 'connection failed'));
+        }
+    }
 
     // Calculs de facturation
     $appelService = $formData['appel_service'];
@@ -196,11 +294,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $pdf->Cell(15, 4, 'MONTH', 1, 0, 'C', true);
     $pdf->Cell(15, 4, 'YEAR', 1, 0, 'C', true);
 
-    // Numéro GLPI en rouge - MÊME ligne Y=12
+    // Numéro PO en rouge - MÊME ligne Y=12
     $pdf->SetXY(175, 12);
     $pdf->SetFont('helvetica', 'B', 12);
     $pdf->SetTextColor(200, 0, 0);
-    $pdf->Cell(35, 10, $_POST['glpi_ticket_id'] ?? '', 1, 0, 'C');
+    $pdf->Cell(35, 10, $poNumber ?? '', 1, 0, 'C');
     $pdf->SetTextColor(0, 0, 0);
 
     // Ligne avec la date du formulaire
@@ -681,6 +779,31 @@ if ($mainOeuvre == 0) {
 }
 $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
 
+// ÉQUIPEMENT
+$pdf->SetX($checkboxX);
+$pdf->SetFillColor(160, 160, 160);
+$pdf->Cell(($labelWidth + $checkboxWidth), 7, 'ÉQUIPEMENT', 'LTB', 0, 'L', true);
+$pdf->SetFillColor(0, 0, 0);
+$pdf->Cell($separatorWidth, 7, '', 'TB', 0, 'C', true);
+$pdf->SetFillColor(255, 255, 255);
+
+if ($equipmentTotal == 0) {
+    $dotWidth = $pdf->GetStringWidth('.');
+    $dollarWidth = $pdf->GetStringWidth('$');
+    $availableSpace = $valueWidth - $dollarWidth - 2;
+    $numDots = floor($availableSpace / $dotWidth);
+    $displayValue = str_repeat('.', max(0, $numDots)) . '$';
+} else {
+    $valueStr = number_format($equipmentTotal, 2, '.', ' ');
+    $dollarWidth = $pdf->GetStringWidth('$');
+    $valueStrWidth = $pdf->GetStringWidth($valueStr);
+    $dotWidth = $pdf->GetStringWidth('.');
+    $availableSpace = $valueWidth - $valueStrWidth - $dollarWidth - 3;
+    $numDots = floor($availableSpace / $dotWidth);
+    $displayValue = str_repeat('.', max(0, $numDots)) . $valueStr . ' $';
+}
+$pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
+
 // SOUS TOTAL
 $pdf->SetX($checkboxX);
 $pdf->SetFillColor(160, 160, 160);
@@ -875,7 +998,7 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                     
                     if ($conn->query($updateQuery) === TRUE) {
                         $insertQuery = $conn->prepare("INSERT INTO history (partner_id, tech_name, ticket_id, equipment, date, address) VALUES (?, ?, ?, ?, ?, ?)");
-                        $insertQuery->bind_param("isssss", $depotID, $userFullName, $_SESSION['glpi_ticket_id'], $selectedEquipment, date("Y-m-d H:i:s"), $partnerRow['address']);
+                        $insertQuery->bind_param("isssss", $depotID, $userFullName, $_SESSION['po_number'], $selectedEquipment, date("Y-m-d H:i:s"), $partnerRow['address']);
                         $insertQuery->execute();
                     }
                 }
@@ -907,6 +1030,8 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
     }
 
     // Affichage direct du PDF
+    $_SESSION['po_number_committed'] = true;
+
     $pdf->Output('workorder_airmagique.pdf', 'I');
     exit;
 }
@@ -1088,12 +1213,13 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
         .radio-item {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
             flex-wrap: wrap;
         }
 
         .radio-item label {
             margin-right: auto;
+            flex: 1 1 auto;
         }
 
         .category-grid {
@@ -1105,6 +1231,7 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
         .category-price {
             margin-left: auto;
             max-width: 140px;
+            flex: 0 0 auto;
         }
 
         .category-price:disabled {
@@ -1432,6 +1559,35 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                 grid-template-columns: 1fr;
             }
 
+            .category-grid {
+                gap: 16px;
+            }
+
+            .radio-item {
+                flex-direction: column;
+                align-items: flex-start;
+                padding: 12px;
+                border: 1px solid #e9ecef;
+                border-radius: 8px;
+                gap: 12px;
+            }
+
+            .radio-item label {
+                margin-right: 0;
+                width: 100%;
+            }
+
+            .radio-item input[type="checkbox"],
+            .radio-item input[type="radio"] {
+                margin-right: 0;
+            }
+
+            .category-price {
+                width: 100%;
+                max-width: none;
+                margin-left: 0;
+            }
+
             .btn-group {
                 flex-direction: column;
             }
@@ -1480,8 +1636,8 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
             <form method="post" action="" enctype="multipart/form-data" id="loginform">
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="glpi_ticket_id">GLPI #/PO #:</label>
-                        <input type="text" id="glpi_ticket_id" name="glpi_ticket_id" pattern="\d{10,}" title="The number must contain at least 10 digits minimum" minlength="10" required placeholder="Required">
+                        <label for="po_number">PO #:</label>
+                        <input type="text" id="po_number" name="po_number" value="<?php echo htmlspecialchars($poNumber ?? ''); ?>" readonly required placeholder="Generated automatically">
                     </div>
                     <div class="form-group">
                         <label for="technician_name">Technician Name:</label>
@@ -1712,6 +1868,10 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                     </div>
 
                     <div class="billing-row">
+                        <span class="billing-label">Equipment Total:</span>
+                        <span class="billing-value" id="equipment_total_display">0.00 $</span>
+                    </div>
+                    <div class="billing-row">
                         <span class="billing-label">Subtotal:</span>
                         <span class="billing-value" id="sous_total_display">0.00 $</span>
                     </div>
@@ -1763,10 +1923,17 @@ $pdf->Cell($valueWidth, 7, $displayValue, 'RTB', 1, 'L', true);
                 <div class="form-group">
                     <label for="upload_files">Upload Files:</label>
                     <div class="file-input-wrapper">
-                        <input type="file" name="uploaded_files[]" multiple id="upload_files" accept="image/jpeg,image/jpg,image/png">
+                        <input type="file" name="uploaded_files[]" multiple id="upload_files" accept="image/*">
                         <label for="upload_files" class="file-input-label">
                             <i class="fas fa-cloud-upload-alt"></i>
                             Choose files... (JPG, JPEG, PNG)
+                        </label>
+                    </div>
+                    <div class="file-input-wrapper" style="margin-top: 10px;">
+                        <input type="file" name="uploaded_files[]" id="capture_photo" accept="image/*" capture="environment">
+                        <label for="capture_photo" class="file-input-label">
+                            <i class="fas fa-camera"></i>
+                            Take a photo
                         </label>
                     </div>
                     <div id="image-preview-container" class="image-preview-container"></div>
@@ -1883,8 +2050,10 @@ function setupCategoryPricing() {
             const togglePriceInput = () => {
                 if (checkbox.checked) {
                     priceInput.disabled = false;
+                    priceInput.required = true;
                 } else {
                     priceInput.value = '';
+                    priceInput.required = false;
                     priceInput.disabled = true;
                 }
                 calculateBilling();
@@ -1902,11 +2071,27 @@ function setupCategoryPricing() {
 // Gestion de la prévisualisation des images
 let selectedFiles = [];
 
-document.getElementById('upload_files').addEventListener('change', function(e) {
-    const files = Array.from(e.target.files);
-    selectedFiles = [...selectedFiles, ...files];
-    displayImagePreviews();
-});
+const uploadInput = document.getElementById('upload_files');
+const captureInput = document.getElementById('capture_photo');
+
+if (uploadInput) {
+    uploadInput.addEventListener('change', function(e) {
+        const files = Array.from(e.target.files);
+        selectedFiles = [...selectedFiles, ...files];
+        displayImagePreviews();
+    });
+}
+
+if (captureInput) {
+    captureInput.addEventListener('change', function(e) {
+        const files = Array.from(e.target.files);
+        if (files.length) {
+            selectedFiles = [...selectedFiles, ...files];
+            displayImagePreviews();
+            captureInput.value = '';
+        }
+    });
+}
 
 function displayImagePreviews() {
     const container = document.getElementById('image-preview-container');
@@ -1943,7 +2128,9 @@ function removeImage(index) {
 function updateFileInput() {
     const dt = new DataTransfer();
     selectedFiles.forEach(file => dt.items.add(file));
-    document.getElementById('upload_files').files = dt.files;
+    if (uploadInput) {
+        uploadInput.files = dt.files;
+    }
 }
 
 // VALIDATION DES HEURES
@@ -2034,6 +2221,7 @@ function calculateBilling() {
     const tvq = sousTotal * 0.09975;
     const total = sousTotal + tps + tvq;
 
+    document.getElementById('equipment_total_display').textContent = equipmentTotal.toFixed(2) + ' $';
     document.getElementById('sous_total_display').textContent = sousTotal.toFixed(2) + ' $';
     document.getElementById('tps_display').textContent = tps.toFixed(2) + ' $';
     document.getElementById('tvq_display').textContent = tvq.toFixed(2) + ' $';

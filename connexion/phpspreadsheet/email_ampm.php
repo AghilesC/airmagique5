@@ -18,7 +18,7 @@ $result = $conn->query($query);
 $spreadsheet = new Spreadsheet();
 $sheet = $spreadsheet->getActiveSheet();
 
-$header = ["ID Partner", "Address", "Equipment", "Tech Name", "GLPI"];
+$header = ["ID Partner", "Address", "Equipment", "Tech Name", "PO"];
 $sheet->fromArray([$header], null, 'A1');
 
 $styleHeader = [
